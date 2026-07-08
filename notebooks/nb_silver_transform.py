@@ -1,6 +1,7 @@
 # ============================================================================
 # SILVER TRANSFORMATION NOTEBOOK
 # Production-ready cleansing, standardization, and SCD2
+# Fabric SQL Database compatible (ActiveDirectoryMSI authentication)
 # ============================================================================
 
 import pyspark.sql.functions as F
@@ -12,35 +13,58 @@ import sys
 import traceback
 from datetime import datetime
 
-dbutils.widgets.text("transformation_id", "0")
-dbutils.widgets.text("entity_id", "0")
-dbutils.widgets.text("run_id", "")
-dbutils.widgets.text("entity_run_id", "")
-dbutils.widgets.text("source_lakehouse", "lh_bronze")
-dbutils.widgets.text("source_schema", "raw")
-dbutils.widgets.text("source_table", "")
-dbutils.widgets.text("target_lakehouse", "lh_silver")
-dbutils.widgets.text("target_schema", "cleaned")
-dbutils.widgets.text("target_table", "")
-dbutils.widgets.text("transformation_type", "STANDARDIZATION")
-dbutils.widgets.text("transformation_logic", "{}")
-dbutils.widgets.text("business_key_columns", "")
-dbutils.widgets.text("control_jdbc_url", "jdbc:sqlserver://placeholder;database=fabric_control;")
-
-transformation_id = int(dbutils.widgets.get("transformation_id"))
-entity_id = int(dbutils.widgets.get("entity_id"))
-run_id = dbutils.widgets.get("run_id")
-entity_run_id = dbutils.widgets.get("entity_run_id")
-source_lakehouse = dbutils.widgets.get("source_lakehouse")
-source_schema = dbutils.widgets.get("source_schema")
-source_table = dbutils.widgets.get("source_table")
-target_lakehouse = dbutils.widgets.get("target_lakehouse")
-target_schema = dbutils.widgets.get("target_schema")
-target_table = dbutils.widgets.get("target_table")
-transformation_type = dbutils.widgets.get("transformation_type")
-transformation_logic_json = dbutils.widgets.get("transformation_logic")
-business_key_columns = dbutils.widgets.get("business_key_columns")
+# Fabric pipeline parameters are injected as notebook-scoped variables
+transformation_id = int(globals().get("transformation_id", "0"))
+entity_id = int(globals().get("entity_id", "0"))
+run_id = globals().get("run_id", "")
+entity_run_id = globals().get("entity_run_id", "")
+source_lakehouse = globals().get("source_lakehouse", "lh_bronze")
+source_schema = globals().get("source_schema", "raw")
+source_table = globals().get("source_table", "")
+target_lakehouse = globals().get("target_lakehouse", "lh_silver")
+target_schema = globals().get("target_schema", "cleaned")
+target_table = globals().get("target_table", "")
+transformation_type = globals().get("transformation_type", "STANDARDIZATION")
+transformation_logic_json = globals().get("transformation_logic", "{}")
+business_key_columns = globals().get("business_key_columns", "")
+control_sql_endpoint = globals().get("control_sql_endpoint", "")
+control_database_name = globals().get("control_database_name", "fabric_control")
 transformation_logic = json.loads(transformation_logic_json) if transformation_logic_json else {}
+
+# Build Fabric SQL Database JDBC URL with AAD MSI authentication
+if control_sql_endpoint and control_sql_endpoint.strip():
+    CONTROL_JDBC_URL = (
+        f"jdbc:sqlserver://{control_sql_endpoint}:1433;"
+        f"database={control_database_name};"
+        "encrypt=true;"
+        "trustServerCertificate=false;"
+        "hostNameInCertificate=*.sql.azuresynapse.net;"
+        "loginTimeout=30;"
+    )
+else:
+    CONTROL_JDBC_URL = ""
+    print("WARNING: control_sql_endpoint is empty. Control DB operations will be disabled.")
+
+# Shared JDBC options for Fabric SQL Database
+_FABRIC_JDBC_OPTS = {
+    "authentication": "ActiveDirectoryMSI",
+}
+
+
+def _fabric_jdbc_read(query, prepared_statement_params=None):
+    """Execute a JDBC read against Fabric SQL Database with proper authentication and fallback."""
+    if not CONTROL_JDBC_URL:
+        raise ConnectionError("CONTROL_JDBC_URL is not configured. Cannot connect to Fabric SQL Database.")
+    reader = spark.read.format("jdbc") \
+        .option("url", CONTROL_JDBC_URL) \
+        .option("query", query)
+    for key, value in _FABRIC_JDBC_OPTS.items():
+        reader = reader.option(key, value)
+    if prepared_statement_params is not None:
+        reader = reader.option("prepareStatement", "true") \
+                       .option("preparedStatementParameters", json.dumps(prepared_statement_params))
+    return reader.load()
+
 
 def read_bronze_table(lakehouse, schema, table):
     path = f"abfss://{lakehouse}@onelake.dfs.fabric.microsoft.com/{schema}/{table}"
@@ -58,9 +82,7 @@ def _validate_foreign_key(df, fk_col, ref_lakehouse, ref_schema, ref_table, ref_
     try:
         ref_path = f"abfss://{ref_lakehouse}@onelake.dfs.fabric.microsoft.com/{ref_schema}/{ref_table}"
         ref_df = spark.read.format("delta").load(ref_path).select(ref_col).distinct()
-        # Use left anti-join to find invalid FKs, then mark rows
         invalid_df = df.join(ref_df, df[fk_col] == ref_df[ref_col], how="left_anti").select(df[fk_col]).distinct()
-        # Return True if the value exists in ref_df (i.e., not in invalid_df)
         return ~F.col(fk_col).isin([r[0] for r in invalid_df.collect()])
     except Exception as e:
         print(f"WARNING: FK validation skipped for {fk_col}: {str(e)}")
@@ -88,7 +110,6 @@ def apply_standardization(df, logic):
         elif std_type == "regex":
             df = df.withColumn(col_name, F.regexp_replace(F.col(col_name), "[^0-9]", ""))
 
-    # FIXED: Implement proper foreign key validation instead of no-op F.lit(True)
     foreign_keys = logic.get("foreign_keys", [])
     for fk in foreign_keys:
         fk_col = fk.get("column")
@@ -97,12 +118,9 @@ def apply_standardization(df, logic):
         ref_lakehouse = fk.get("ref_lakehouse", "lh_silver")
         ref_schema = fk.get("ref_schema", "cleaned")
         if fk_col and fk_col in df.columns and ref_table:
-            # Use left semi-join for FK validation: mark True if FK exists in reference table
             try:
                 ref_path = f"abfss://{ref_lakehouse}@onelake.dfs.fabric.microsoft.com/{ref_schema}/{ref_table}"
                 ref_df = spark.read.format("delta").load(ref_path).select(ref_col).distinct()
-                # Create a boolean column: True if the FK value exists in ref_df
-                # Use left semi join to find valid rows, then left anti for invalid
                 valid_rows_df = df.join(ref_df, F.col(fk_col) == F.col(ref_col), how="left_semi").select(fk_col)
                 valid_values = [r[0] for r in valid_rows_df.distinct().collect()]
                 if valid_values:
@@ -113,7 +131,6 @@ def apply_standardization(df, logic):
                 print(f"WARNING: FK validation failed for {fk_col} -> {ref_table}.{ref_col}: {str(e)}")
                 df = df.withColumn(f"_fk_valid_{fk_col}", F.lit(True))
         elif fk_col and fk_col in df.columns:
-            # No ref_table specified, just check for null
             df = df.withColumn(f"_fk_valid_{fk_col}", F.col(fk_col).isNotNull())
 
     df = df.withColumn("_silver_transform_timestamp", F.current_timestamp()).withColumn("_silver_transformation_id", F.lit(transformation_id)).withColumn("_silver_run_id", F.lit(run_id)).withColumn("_silver_entity_run_id", F.lit(entity_run_id))

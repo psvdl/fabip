@@ -1,11 +1,11 @@
 {
   "name": "pl_gold_orchestrator",
   "properties": {
-    "description": "Dedicated pipeline for Gold layer curation with dependency management",
+    "description": "Dedicated pipeline for Gold layer curation with dependency management (Fabric-compatible)",
     "activities": [
       {
         "name": "Lookup Gold Models",
-        "type": "Lookup",
+        "type": "Notebook",
         "dependsOn": [],
         "policy": {
           "timeout": "0.05:00:00",
@@ -13,21 +13,28 @@
           "retryIntervalInSeconds": 30
         },
         "typeProperties": {
-          "source": {
-            "type": "AzureSqlSource",
-            "sqlReaderStoredProcedureName": "[cfg].[usp_GetGoldModelsToProcess]",
-            "storedProcedureParameters": {
-              "ModelId": {
-                "type": "Int32",
-                "value": null
-              }
+          "notebook": {
+            "referenceName": "nb_sql_lookup",
+            "type": "NotebookReference"
+          },
+          "parameters": {
+            "control_sql_endpoint": {
+              "value": "@pipeline().parameters.control_sql_endpoint",
+              "type": "Expression"
+            },
+            "control_database_name": {
+              "value": "@pipeline().parameters.control_database_name",
+              "type": "Expression"
+            },
+            "query": {
+              "value": "EXEC cfg.usp_GetGoldModelsToProcess @ModelId=NULL",
+              "type": "String"
+            },
+            "key_vault_url": {
+              "value": "@pipeline().parameters.key_vault_url",
+              "type": "Expression"
             }
-          },
-          "dataset": {
-            "referenceName": "ds_control_database",
-            "type": "DatasetReference"
-          },
-          "firstRowOnly": false
+          }
         }
       },
       {
@@ -43,7 +50,7 @@
         ],
         "typeProperties": {
           "items": {
-            "value": "@activity('Lookup Gold Models').output.value",
+            "value": "@activity('Lookup Gold Models').output.runOutput",
             "type": "Expression"
           },
           "isSequential": true
@@ -80,8 +87,16 @@
                   "value": "@pipeline().RunId",
                   "type": "Expression"
                 },
-                "control_jdbc_url": {
-                  "value": "@pipeline().parameters.control_jdbc_url",
+                "control_sql_endpoint": {
+                  "value": "@pipeline().parameters.control_sql_endpoint",
+                  "type": "Expression"
+                },
+                "control_database_name": {
+                  "value": "@pipeline().parameters.control_database_name",
+                  "type": "Expression"
+                },
+                "key_vault_url": {
+                  "value": "@pipeline().parameters.key_vault_url",
                   "type": "Expression"
                 }
               }
@@ -89,7 +104,7 @@
           },
           {
             "name": "Log Gold Model Run",
-            "type": "SqlServerStoredProcedure",
+            "type": "Notebook",
             "dependsOn": [
               {
                 "activity": "Gold Model Curation",
@@ -103,34 +118,49 @@
               "retry": 2
             },
             "typeProperties": {
-              "storedProcedureName": "[audit].[usp_LogGoldModelEnd]",
-              "storedProcedureParameters": {
-                "GoldRunId": {
-                  "value": "@guid()",
+              "notebook": {
+                "referenceName": "nb_sql_execute",
+                "type": "NotebookReference"
+              },
+              "parameters": {
+                "control_sql_endpoint": {
+                  "value": "@pipeline().parameters.control_sql_endpoint",
+                  "type": "Expression"
+                },
+                "control_database_name": {
+                  "value": "@pipeline().parameters.control_database_name",
+                  "type": "Expression"
+                },
+                "stored_procedure_name": {
+                  "value": "[audit].[usp_LogGoldModelEnd]",
                   "type": "String"
                 },
-                "Status": {
-                  "value": "@if(equals(activity('Gold Model Curation').status, 'Succeeded'), 'SUCCEEDED', 'FAILED')",
-                  "type": "String"
+                "stored_procedure_params_json": {
+                  "value": "@{json(concat('{', '\"GoldRunId\":\"', guid(), '\",\"Status\":\"', if(equals(activity('Gold Model Curation').status, 'Succeeded'), 'SUCCEEDED', 'FAILED'), '\",\"ErrorMessage\":\"', if(equals(activity('Gold Model Curation').status, 'Succeeded'), '', activity('Gold Model Curation').error.message), '\"}'))}",
+                  "type": "Expression"
                 },
-                "ErrorMessage": {
-                  "value": "@if(equals(activity('Gold Model Curation').status, 'Succeeded'), null, activity('Gold Model Curation').error.message)",
-                  "type": "String"
+                "key_vault_url": {
+                  "value": "@pipeline().parameters.key_vault_url",
+                  "type": "Expression"
                 }
               }
-            },
-            "dataset": {
-              "referenceName": "ds_control_database",
-              "type": "DatasetReference"
             }
           }
         ]
       }
     ],
     "parameters": {
-      "control_jdbc_url": {
+      "control_sql_endpoint": {
         "type": "String",
-        "defaultValue": "jdbc:sqlserver://placeholder;database=fabric_control;"
+        "defaultValue": "<workspace>.sql.azuresynapse.net"
+      },
+      "control_database_name": {
+        "type": "String",
+        "defaultValue": "fabric_control"
+      },
+      "key_vault_url": {
+        "type": "String",
+        "defaultValue": "https://<vault>.vault.azure.net/"
       }
     },
     "variables": {},

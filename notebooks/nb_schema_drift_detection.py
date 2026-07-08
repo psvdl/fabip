@@ -8,17 +8,15 @@ import pyspark.sql.functions as F
 from delta.tables import DeltaTable
 import json
 
-dbutils.widgets.text("entity_id", "0")
-dbutils.widgets.text("source_lakehouse", "lh_bronze")
-dbutils.widgets.text("source_schema", "raw")
-dbutils.widgets.text("source_table", "")
-dbutils.widgets.text("drift_strategy", "merge")
-
-entity_id = int(dbutils.widgets.get("entity_id"))
-source_lakehouse = dbutils.widgets.get("source_lakehouse")
-source_schema = dbutils.widgets.get("source_schema")
-source_table = dbutils.widgets.get("source_table")
-drift_strategy = dbutils.widgets.get("drift_strategy")
+# Fabric pipeline parameters are injected as notebook-scoped variables
+entity_id = int(globals().get("entity_id", "0"))
+source_lakehouse = globals().get("source_lakehouse", "lh_bronze")
+source_schema = globals().get("source_schema", "raw")
+source_table = globals().get("source_table", "")
+drift_strategy = globals().get("drift_strategy", "merge")
+control_sql_endpoint = globals().get("control_sql_endpoint", "")
+control_database_name = globals().get("control_database_name", "fabric_control")
+key_vault_url = globals().get("key_vault_url", "")
 
 def detect_drift(source_df, target_path):
     source_schema = {f.name: str(f.dataType) for f in source_df.schema.fields}

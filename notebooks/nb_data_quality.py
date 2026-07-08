@@ -1,27 +1,59 @@
 # ============================================================================
 # DATA QUALITY NOTEBOOK
 # Production-ready data quality engine with quarantine
+# Fabric SQL Database compatible (ActiveDirectoryMSI authentication)
 # ============================================================================
 
 import pyspark.sql.functions as F
 from pyspark.sql.types import *
+from pyspark.sql.window import Window
 import json
 import traceback
 from datetime import datetime
 
-dbutils.widgets.text("entity_id", "0")
-dbutils.widgets.text("entity_run_id", "")
-dbutils.widgets.text("source_lakehouse", "lh_bronze")
-dbutils.widgets.text("source_schema", "raw")
-dbutils.widgets.text("source_table", "")
-dbutils.widgets.text("control_jdbc_url", "jdbc:sqlserver://placeholder;database=fabric_control;")
+# Fabric pipeline parameters are injected as notebook-scoped variables
+entity_id = int(globals().get("entity_id", "0"))
+entity_run_id = globals().get("entity_run_id", "")
+source_lakehouse = globals().get("source_lakehouse", "lh_bronze")
+source_schema = globals().get("source_schema", "raw")
+source_table = globals().get("source_table", "")
+control_sql_endpoint = globals().get("control_sql_endpoint", "")
+control_database_name = globals().get("control_database_name", "fabric_control")
 
-entity_id = int(dbutils.widgets.get("entity_id"))
-entity_run_id = dbutils.widgets.get("entity_run_id")
-source_lakehouse = dbutils.widgets.get("source_lakehouse")
-source_schema = dbutils.widgets.get("source_schema")
-source_table = dbutils.widgets.get("source_table")
-CONTROL_JDBC_URL = dbutils.widgets.get("control_jdbc_url")
+# Build Fabric SQL Database JDBC URL
+if control_sql_endpoint and control_sql_endpoint.strip():
+    CONTROL_JDBC_URL = (
+        f"jdbc:sqlserver://{control_sql_endpoint}:1433;"
+        f"database={control_database_name};"
+        f"encrypt=true;"
+        f"trustServerCertificate=false;"
+        f"hostNameInCertificate=*.sql.azuresynapse.net;"
+        f"loginTimeout=30;"
+    )
+else:
+    CONTROL_JDBC_URL = ""
+    print("WARNING: control_sql_endpoint is empty. DQ rules will use defaults.")
+
+# Shared JDBC options for Fabric SQL Database
+_FABRIC_JDBC_OPTS = {
+    "authentication": "ActiveDirectoryMSI",
+}
+
+
+def _fabric_jdbc_read(query, prepared_statement_params=None):
+    """Execute a JDBC read against Fabric SQL Database with proper authentication and fallback."""
+    if not CONTROL_JDBC_URL:
+        raise ConnectionError("CONTROL_JDBC_URL is not configured. Cannot connect to Fabric SQL Database.")
+    reader = spark.read.format("jdbc") \
+        .option("url", CONTROL_JDBC_URL) \
+        .option("query", query)
+    for key, value in _FABRIC_JDBC_OPTS.items():
+        reader = reader.option(key, value)
+    if prepared_statement_params is not None:
+        reader = reader.option("prepareStatement", "true") \
+                       .option("preparedStatementParameters", json.dumps(prepared_statement_params))
+    return reader.load()
+
 
 def read_source_table():
     path = f"abfss://{source_lakehouse}@onelake.dfs.fabric.microsoft.com/{source_schema}/{source_table}"
@@ -29,8 +61,11 @@ def read_source_table():
 
 def read_quality_rules_from_db():
     try:
+        if not CONTROL_JDBC_URL:
+            print("WARNING: CONTROL_JDBC_URL not configured. Using default DQ rules.")
+            raise ConnectionError("Fabric SQL Database endpoint not configured.")
         query = f"SELECT RuleId, RuleName, RuleType, ColumnName, ExpectedValue, MinValue, MaxValue, RegexPattern, RefTable, RefColumn, Severity, QuarantineEnabled FROM dq.Rules WHERE EntityId = {entity_id} AND IsActive = 1"
-        df = spark.read.format("jdbc").option("url", CONTROL_JDBC_URL).option("query", query).load()
+        df = _fabric_jdbc_read(query)
         return [row.asDict() for row in df.collect()]
     except Exception as e:
         print(f"WARNING: Could not load rules from DB: {str(e)}. Using defaults.")
@@ -74,9 +109,6 @@ def evaluate_ref_integrity(df, column_name, ref_table, ref_column):
         return {"total": df.count(), "failed": 0, "failure_rate": 0, "passed": True}
 
 def quarantine_bad_rows(df, rule_results, quarantine_table):
-    # FIXED: Check rule["rule_type"] instead of rule["rule_name"] since rule_name contains
-    # descriptive text (e.g., "Primary Key Not Null") while rule_type contains the machine-readable
-    # type (e.g., "NOT_NULL", "RANGE", "EMAIL_FORMAT")
     bad_conditions = []
     for rule in rule_results:
         if not rule["passed"] and rule.get("QuarantineEnabled", True):
@@ -85,33 +117,25 @@ def quarantine_bad_rows(df, rule_results, quarantine_table):
             if rule_type == "NOT_NULL":
                 bad_conditions.append(F.col(col).isNull())
             elif rule_type == "RANGE":
-                # FIXED: Use correct MinValue/MaxValue from the rule definition
                 min_v = rule.get("MinValue", float('-inf'))
                 max_v = rule.get("MaxValue", float('inf'))
-                # Handle None values from the rule config
                 if min_v is None:
                     min_v = float('-inf')
                 if max_v is None:
                     max_v = float('inf')
-                # Build condition: only apply bounds that are not infinite
                 if min_v != float('-inf') and max_v != float('inf'):
                     bad_conditions.append((F.col(col) < min_v) | (F.col(col) > max_v))
                 elif min_v != float('-inf'):
                     bad_conditions.append(F.col(col) < min_v)
                 elif max_v != float('inf'):
                     bad_conditions.append(F.col(col) > max_v)
-                # Also null values fail range checks
                 bad_conditions.append(F.col(col).isNull())
             elif rule_type == "EMAIL_FORMAT":
                 bad_conditions.append(~F.col(col).rlike(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"))
             elif rule_type == "UNIQUE":
-                # For unique violations, use window function to find duplicates
                 window_spec = Window.partitionBy(col)
                 bad_conditions.append(F.count(col).over(window_spec) > 1)
             elif rule_type == "REF_INTEGRITY":
-                # FK violations handled at row level - mark rows where ref lookup fails
-                # This requires the ref table to be available - use a placeholder that
-                # will be caught by the broader quarantine logic
                 bad_conditions.append(F.col(col).isNull())
             elif rule_type == "REGEX":
                 pattern = rule.get("RegexPattern", ".*")

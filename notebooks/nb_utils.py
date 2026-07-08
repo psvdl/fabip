@@ -1,6 +1,7 @@
 # ============================================================================
 # UTILITIES NOTEBOOK
 # Reusable helper functions for Fabric ELT
+# Fabric notebook compatible
 # ============================================================================
 
 import json

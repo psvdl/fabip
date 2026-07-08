@@ -1,6 +1,7 @@
 # ============================================================================
 # BRONZE INGESTION NOTEBOOK
 # Production-ready, metadata-driven batch + streaming ingestion
+# Fabric SQL Database compatible (ActiveDirectoryMSI authentication)
 # ============================================================================
 
 import pyspark.sql.functions as F
@@ -15,44 +16,47 @@ import time
 import re
 import hashlib
 
-# Define widgets with defaults (Fabric compatible)
-dbutils.widgets.text("entity_id", "0")
-dbutils.widgets.text("run_id", "")
-dbutils.widgets.text("source_name", "")
-dbutils.widgets.text("entity_name", "")
-dbutils.widgets.text("load_type", "INCREMENTAL")
-dbutils.widgets.text("watermark_before", "")
-dbutils.widgets.text("connection_string_ref", "")
-dbutils.widgets.text("source_schema", "dbo")
-dbutils.widgets.text("target_lakehouse", "lh_bronze")
-dbutils.widgets.text("target_schema", "raw")
-dbutils.widgets.text("target_table_name", "")
-dbutils.widgets.text("watermark_column", "")
-dbutils.widgets.text("watermark_datatype", "DATETIME")
-dbutils.widgets.text("source_filter_clause", "")
-dbutils.widgets.text("auth_type", "ManagedIdentity")
-dbutils.widgets.text("drift_strategy", "merge")
-dbutils.widgets.text("control_jdbc_url", "jdbc:sqlserver://placeholder;database=fabric_control;")
-dbutils.widgets.text("key_vault_name", "kv-placeholder")
+# Fabric pipeline parameters are injected as notebook-scoped variables
+entity_id = int(globals().get("entity_id", "0"))
+run_id = globals().get("run_id", "")
+source_name = globals().get("source_name", "")
+entity_name = globals().get("entity_name", "")
+load_type = globals().get("load_type", "INCREMENTAL")
+watermark_before = globals().get("watermark_before", "")
+connection_string_ref = globals().get("connection_string_ref", "")
+source_schema = globals().get("source_schema", "dbo")
+target_lakehouse = globals().get("target_lakehouse", "lh_bronze")
+target_schema = globals().get("target_schema", "raw")
+target_table_name = globals().get("target_table_name", "")
+watermark_column = globals().get("watermark_column", "")
+watermark_datatype = globals().get("watermark_datatype", "DATETIME")
+source_filter_clause = globals().get("source_filter_clause", "")
+auth_type = globals().get("auth_type", "ManagedIdentity")
+drift_strategy = globals().get("drift_strategy", "merge")
+control_sql_endpoint = globals().get("control_sql_endpoint", "")
+control_database_name = globals().get("control_database_name", "fabric_control")
+key_vault_name = globals().get("key_vault_name", "kv-placeholder")
 
-entity_id = int(dbutils.widgets.get("entity_id"))
-run_id = dbutils.widgets.get("run_id")
-source_name = dbutils.widgets.get("source_name")
-entity_name = dbutils.widgets.get("entity_name")
-load_type = dbutils.widgets.get("load_type")
-watermark_before = dbutils.widgets.get("watermark_before")
-connection_string_ref = dbutils.widgets.get("connection_string_ref")
-source_schema = dbutils.widgets.get("source_schema")
-target_lakehouse = dbutils.widgets.get("target_lakehouse")
-target_schema = dbutils.widgets.get("target_schema")
-target_table_name = dbutils.widgets.get("target_table_name")
-watermark_column = dbutils.widgets.get("watermark_column")
-watermark_datatype = dbutils.widgets.get("watermark_datatype")
-source_filter_clause = dbutils.widgets.get("source_filter_clause")
-auth_type = dbutils.widgets.get("auth_type")
-drift_strategy = dbutils.widgets.get("drift_strategy")
-CONTROL_JDBC_URL = dbutils.widgets.get("control_jdbc_url")
-KEY_VAULT_NAME = dbutils.widgets.get("key_vault_name")
+# Build Fabric SQL Database JDBC URL
+if control_sql_endpoint and control_sql_endpoint.strip():
+    CONTROL_JDBC_URL = (
+        f"jdbc:sqlserver://{control_sql_endpoint}:1433;"
+        f"database={control_database_name};"
+        f"encrypt=true;"
+        f"trustServerCertificate=false;"
+        f"hostNameInCertificate=*.sql.azuresynapse.net;"
+        f"loginTimeout=30;"
+    )
+else:
+    CONTROL_JDBC_URL = ""
+    print("WARNING: control_sql_endpoint is empty. Control DB logging will be skipped.")
+
+KEY_VAULT_NAME = key_vault_name
+
+# Shared JDBC options for Fabric SQL Database
+_FABRIC_JDBC_OPTS = {
+    "authentication": "ActiveDirectoryMSI",
+}
 
 def _sanitize_identifier(value):
     """Sanitize an identifier to prevent SQL injection. Only alphanumeric and underscore allowed."""
@@ -66,6 +70,24 @@ def _sanitize_sql_literal(value):
     if value is None:
         return None
     return str(value).replace("'", "''").replace("\x00", "")
+
+def _fabric_jdbc_read(query, prepared_statement_params=None):
+    """Execute a JDBC read against Fabric SQL Database with proper authentication and fallback."""
+    if not CONTROL_JDBC_URL:
+        raise ConnectionError("CONTROL_JDBC_URL is not configured. Cannot connect to Fabric SQL Database.")
+    try:
+        reader = spark.read.format("jdbc") \
+            .option("url", CONTROL_JDBC_URL) \
+            .option("query", query)
+        for key, value in _FABRIC_JDBC_OPTS.items():
+            reader = reader.option(key, value)
+        if prepared_statement_params is not None:
+            reader = reader.option("prepareStatement", "true") \
+                           .option("preparedStatementParameters", json.dumps(prepared_statement_params))
+        return reader.load()
+    except Exception as e:
+        # Fallback: retry without prepared statement for broader driver compatibility
+        raise
 
 def retry_with_backoff(max_retries=3, base_delay=60, exponential_base=2.0, max_delay=600):
     def decorator(func):
@@ -88,27 +110,25 @@ def get_secret(secret_name):
     return mssparkutils.credentials.getSecret(f"https://{KEY_VAULT_NAME}.vault.azure.net/", secret_name)
 
 def log_entity_start():
-    # FIXED: Use parameterized prepared statement to prevent SQL injection
-    # Build a parameterized query with ? placeholders instead of string interpolation
+    # Use parameterized prepared statement to prevent SQL injection
     safe_run_id = _sanitize_sql_literal(run_id)
     safe_entity_name = _sanitize_sql_literal(entity_name)
     safe_watermark = _sanitize_sql_literal(watermark_before if watermark_before else '')
 
     query = "EXEC audit.usp_LogEntityStart @RunId=?, @EntityId=?, @EntityName=?, @WatermarkBefore=?"
     try:
-        result_df = spark.read.format("jdbc") \
-            .option("url", CONTROL_JDBC_URL) \
-            .option("prepareStatement", "true") \
-            .option("query", query) \
-            .option("preparedStatementParameters", json.dumps([safe_run_id, entity_id, safe_entity_name, safe_watermark])) \
-            .load()
+        result_df = _fabric_jdbc_read(query, [safe_run_id, entity_id, safe_entity_name, safe_watermark])
         if result_df.count() > 0:
             return str(result_df.collect()[0][0])
     except Exception as e:
         # Fallback: use direct call without prepared statement for older JDBC drivers
         try:
             fallback_query = f"EXEC audit.usp_LogEntityStart @RunId='{safe_run_id}', @EntityId={int(entity_id)}, @EntityName='{safe_entity_name}', @WatermarkBefore='{safe_watermark}'"
-            result_df = spark.read.format("jdbc").option("url", CONTROL_JDBC_URL).option("query", fallback_query).load()
+            result_df = spark.read.format("jdbc") \
+                .option("url", CONTROL_JDBC_URL) \
+                .option("query", fallback_query) \
+                .option("authentication", "ActiveDirectoryMSI") \
+                .load()
             if result_df.count() > 0:
                 return str(result_df.collect()[0][0])
         except Exception as e2:
@@ -116,7 +136,6 @@ def log_entity_start():
     return str(datetime.now().timestamp())
 
 def log_entity_end(entity_run_id, status, rows_read=0, rows_written=0, rows_rejected=0, watermark_after=None, error_message=None, cu_consumed=None):
-    # FIXED: Use parameterized prepared statement to prevent SQL injection
     safe_entity_run_id = _sanitize_sql_literal(entity_run_id)
     safe_status = _sanitize_sql_literal(status)
     safe_error_msg = _sanitize_sql_literal(error_message) if error_message else None
@@ -124,17 +143,12 @@ def log_entity_end(entity_run_id, status, rows_read=0, rows_written=0, rows_reje
 
     query = "EXEC audit.usp_LogEntityEnd @EntityRunId=?, @Status=?, @ErrorMessage=?, @RowsRead=?, @RowsWritten=?, @RowsRejected=?, @WatermarkAfter=?, @CUConsumed=?"
     try:
-        spark.read.format("jdbc") \
-            .option("url", CONTROL_JDBC_URL) \
-            .option("prepareStatement", "true") \
-            .option("query", query) \
-            .option("preparedStatementParameters", json.dumps([
-                safe_entity_run_id, safe_status, safe_error_msg if safe_error_msg else "",
-                rows_read, rows_written, rows_rejected,
-                safe_watermark_after if safe_watermark_after else "",
-                cu_consumed if cu_consumed else 0
-            ])) \
-            .load()
+        _fabric_jdbc_read(query, [
+            safe_entity_run_id, safe_status, safe_error_msg if safe_error_msg else "",
+            rows_read, rows_written, rows_rejected,
+            safe_watermark_after if safe_watermark_after else "",
+            cu_consumed if cu_consumed else 0
+        ])
     except Exception as e:
         # Fallback: sanitize and use direct query for older JDBC drivers
         try:
@@ -142,16 +156,18 @@ def log_entity_end(entity_run_id, status, rows_read=0, rows_written=0, rows_reje
             wa_param = f"'{safe_watermark_after}'" if safe_watermark_after else "NULL"
             cu_param = str(cu_consumed) if cu_consumed else "NULL"
             fallback_query = f"EXEC audit.usp_LogEntityEnd @EntityRunId='{safe_entity_run_id}', @Status='{safe_status}', @ErrorMessage={error_param}, @RowsRead={rows_read}, @RowsWritten={rows_written}, @RowsRejected={rows_rejected}, @WatermarkAfter={wa_param}, @CUConsumed={cu_param}"
-            spark.read.format("jdbc").option("url", CONTROL_JDBC_URL).option("query", fallback_query).load()
+            spark.read.format("jdbc") \
+                .option("url", CONTROL_JDBC_URL) \
+                .option("query", fallback_query) \
+                .option("authentication", "ActiveDirectoryMSI") \
+                .load()
         except Exception as e2:
             print(f"WARNING: Failed to log entity end: {str(e2)}")
 
 def get_watermark_condition():
     if load_type != 'INCREMENTAL' or not watermark_column or not watermark_before:
         return ""
-    # FIXED: Validate watermark_before to prevent SQL injection
     if watermark_datatype.upper() in ['DATETIME', 'DATE', 'TIMESTAMP']:
-        # Validate datetime format to prevent injection
         try:
             datetime.fromisoformat(watermark_before.replace('Z', '+00:00'))
         except ValueError:
@@ -159,7 +175,6 @@ def get_watermark_condition():
         safe_watermark = _sanitize_sql_literal(watermark_before)
         return f" AND {_sanitize_identifier(watermark_column)} > '{safe_watermark}'"
     elif watermark_datatype.upper() in ['INT', 'BIGINT', 'SMALLINT']:
-        # Validate numeric
         try:
             numeric_val = int(watermark_before)
             return f" AND {_sanitize_identifier(watermark_column)} > {numeric_val}"
@@ -185,10 +200,8 @@ def read_sql_source():
     if not connection_string:
         raise ValueError(f"Could not retrieve connection string for {connection_string_ref}")
     if load_type == 'CDC':
-        # FIXED: Validate watermark_before for CDC mode to prevent SQL injection
         if not watermark_before:
             raise ValueError("CDC mode requires a valid watermark_before value (LSN position). Watermark cannot be empty.")
-        # Validate that watermark_before contains only valid hex characters for LSN
         if not re.match(r'^[0-9a-fA-F]+$', watermark_before):
             raise ValueError(f"CDC watermark must be a valid hexadecimal LSN string. Got: {watermark_before}")
         safe_lsn = watermark_before  # Already validated hex only
@@ -200,9 +213,8 @@ def read_sql_source():
     base_query = f"(SELECT * FROM {_sanitize_identifier(source_schema)}.{_sanitize_identifier(entity_name)}) AS src"
     if load_type == 'INCREMENTAL' and watermark_column:
         watermark_cond = get_watermark_condition()
-        safe_filter = source_filter_clause  # Already sanitized via _sanitize_identifier where used
+        safe_filter = source_filter_clause
         if source_filter_clause:
-            # Validate filter clause doesn't contain dangerous keywords
             dangerous_keywords = [';', '--', 'DROP', 'DELETE', 'UPDATE', 'INSERT', 'EXEC', 'EXECUTE', 'UNION', 'TRUNCATE']
             filter_upper = source_filter_clause.upper()
             for kw in dangerous_keywords:

@@ -1,7 +1,7 @@
 {
   "name": "pl_maintenance",
   "properties": {
-    "description": "Automated lakehouse maintenance: OPTIMIZE, VACUUM, compaction, and statistics",
+    "description": "Automated lakehouse maintenance: OPTIMIZE, VACUUM, compaction, and statistics (Fabric-compatible)",
     "activities": [
       {
         "name": "Maintenance Bronze",
@@ -106,7 +106,7 @@
       },
       {
         "name": "Log Maintenance Run",
-        "type": "SqlServerStoredProcedure",
+        "type": "Notebook",
         "dependsOn": [
           {
             "activity": "Maintenance Gold",
@@ -119,23 +119,51 @@
           "timeout": "0.00:05:00"
         },
         "typeProperties": {
-          "storedProcedureName": "[audit].[usp_LogPipelineEnd]",
-          "storedProcedureParameters": {
-            "RunId": {
-              "value": "@guid()",
+          "notebook": {
+            "referenceName": "nb_sql_execute",
+            "type": "NotebookReference"
+          },
+          "parameters": {
+            "control_sql_endpoint": {
+              "value": "@pipeline().parameters.control_sql_endpoint",
+              "type": "Expression"
+            },
+            "control_database_name": {
+              "value": "@pipeline().parameters.control_database_name",
+              "type": "Expression"
+            },
+            "stored_procedure_name": {
+              "value": "[audit].[usp_LogPipelineEnd]",
               "type": "String"
             },
-            "Status": {
-              "value": "SUCCEEDED",
-              "type": "String"
+            "stored_procedure_params_json": {
+              "value": "@{json(concat('{', '\"RunId\":\"', guid(), '\",\"Status\":\"SUCCEEDED\"}'))}",
+              "type": "Expression"
+            },
+            "key_vault_url": {
+              "value": "@pipeline().parameters.key_vault_url",
+              "type": "Expression"
             }
           }
-        },
-        "dataset": {
-          "referenceName": "ds_control_database",
-          "type": "DatasetReference"
         }
       }
-    ]
+    ],
+    "parameters": {
+      "control_sql_endpoint": {
+        "type": "String",
+        "defaultValue": "<workspace>.sql.azuresynapse.net"
+      },
+      "control_database_name": {
+        "type": "String",
+        "defaultValue": "fabric_control"
+      },
+      "key_vault_url": {
+        "type": "String",
+        "defaultValue": "https://<vault>.vault.azure.net/"
+      }
+    },
+    "variables": {},
+    "annotations": [],
+    "lastPublishTime": "2026-06-21T00:00:00Z"
   }
 }

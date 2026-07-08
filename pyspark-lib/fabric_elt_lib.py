@@ -13,18 +13,65 @@ import json
 import hashlib
 from datetime import datetime, timedelta
 
+
+# ============================================================================
+# FABRIC SQL DATABASE CONNECTION HELPERS
+# ============================================================================
+
+def build_fabric_jdbc_url(workspace_sql_endpoint, database_name):
+    """
+    Build a JDBC URL for Microsoft Fabric SQL Database.
+
+    The returned connection string includes the required settings for
+    AAD-based authentication via Managed Service Identity (MSI) and
+    proper SSL encryption compatible with Fabric SQL endpoints.
+
+    Args:
+        workspace_sql_endpoint (str): The SQL endpoint hostname
+            (e.g., 'xxx.sql.azuresynapse.net').
+        database_name (str): The database name
+            (e.g., 'fabric_control').
+
+    Returns:
+        str: JDBC connection string for Fabric SQL Database.
+
+    Example:
+        >>> jdbc_url = build_fabric_jdbc_url(
+        ...     "myws-warehouse.sql.azuresynapse.net",
+        ...     "fabric_control"
+        ... )
+        >>> print(jdbc_url)
+        jdbc:sqlserver://myws-warehouse.sql.azuresynapse.net:1433;...
+    """
+    return (
+        f"jdbc:sqlserver://{workspace_sql_endpoint}:1433;"
+        f"database={database_name};"
+        f"encrypt=true;"
+        f"trustServerCertificate=false;"
+        f"hostNameInCertificate=*.sql.azuresynapse.net;"
+    )
+
+
+# ============================================================================
+# DATA QUALITY VALIDATION FUNCTIONS
+# ============================================================================
+
 def validate_not_null(df, column):
     return df.withColumn(f"_dq_{column}_not_null", F.col(column).isNotNull())
+
 
 def validate_unique(df, column):
     window_spec = Window.partitionBy(column)
     return df.withColumn(f"_dq_{column}_unique", F.count(column).over(window_spec) == 1)
 
+
 def validate_range(df, column, min_val, max_val):
     return df.withColumn(f"_dq_{column}_range", (F.col(column) >= min_val) & (F.col(column) <= max_val) & F.col(column).isNotNull())
 
+
 def validate_regex(df, column, pattern):
     return df.withColumn(f"_dq_{column}_regex", F.col(column).rlike(pattern) & F.col(column).isNotNull())
+
 
 def validate_foreign_key(df, column, ref_df, ref_column):
     # FIXED: Use broadcast semi-join pattern instead of .collect() which risks OOM
@@ -44,6 +91,7 @@ def validate_foreign_key(df, column, ref_df, ref_column):
     else:
         return df.withColumn(f"_dq_{column}_fk", F.col(column).isNotNull())
 
+
 def apply_all_validations(df, validation_config):
     for rule in validation_config:
         rule_type = rule.get("type")
@@ -62,6 +110,11 @@ def apply_all_validations(df, validation_config):
         df = df.withColumn("_dq_all_passed", F.forall(F.array(*[F.col(c) for c in dq_cols])))
     return df
 
+
+# ============================================================================
+# STANDARDIZATION FUNCTIONS
+# ============================================================================
+
 def standardize_case(df, column, case="lower"):
     if case == "lower":
         return df.withColumn(column, F.lower(F.col(column)))
@@ -69,17 +122,22 @@ def standardize_case(df, column, case="lower"):
         return df.withColumn(column, F.upper(F.col(column)))
     return df
 
+
 def standardize_trim(df, column):
     return df.withColumn(column, F.trim(F.col(column)))
+
 
 def standardize_phone(df, column):
     return df.withColumn(column, F.regexp_replace(F.col(column), "[^0-9]", ""))
 
+
 def standardize_date(df, column, format="yyyy-MM-dd"):
     return df.withColumn(column, F.to_date(F.col(column), format))
 
+
 def standardize_timestamp(df, column):
     return df.withColumn(column, F.to_timestamp(F.col(column)))
+
 
 def apply_standardization(df, config):
     for column, std_type in config.items():
@@ -98,6 +156,11 @@ def apply_standardization(df, config):
         elif std_type == "timestamp":
             df = standardize_timestamp(df, column)
     return df
+
+
+# ============================================================================
+# SCD TYPE 2
+# ============================================================================
 
 def apply_scd2(df, target_path, business_keys, scd2_columns, effective_date_col="ValidFrom", expiry_date_col="ValidTo", is_current_col="IsCurrent"):
     current_time = F.current_timestamp()
@@ -143,12 +206,60 @@ def apply_scd2(df, target_path, business_keys, scd2_columns, effective_date_col=
         df.write.format("delta").mode("overwrite").save(target_path)
     return df
 
-def get_watermark_from_control_table(control_jdbc_url, entity_id, watermark_column):
-    query = f"SELECT TOP 1 WatermarkAfter FROM audit.EntityRuns WHERE EntityId = {entity_id} AND Status = 'SUCCEEDED' ORDER BY EndTime DESC"
-    df = spark.read.format("jdbc").option("url", control_jdbc_url).option("query", query).load()
+
+# ============================================================================
+# INCREMENTAL / WATERMARK FUNCTIONS (Fabric SQL Database)
+# ============================================================================
+
+def get_watermark_from_control_table(workspace_sql_endpoint, database_name, entity_id, watermark_column):
+    """
+    Retrieve the latest successful watermark value from the control table
+    stored in a Fabric SQL Database.
+
+    Uses AAD MSI authentication to connect securely without credentials.
+
+    Args:
+        workspace_sql_endpoint (str): Fabric SQL endpoint hostname
+            (e.g., 'xxx.sql.azuresynapse.net').
+        database_name (str): Name of the control database
+            (e.g., 'fabric_control').
+        entity_id (int): Identifier for the entity/run.
+        watermark_column (str): Name of the watermark column used for
+            incremental extraction.
+
+    Returns:
+        object: The watermark value (or None if no prior successful run).
+
+    Example:
+        >>> wm = get_watermark_from_control_table(
+        ...     "myws-warehouse.sql.azuresynapse.net",
+        ...     "fabric_control",
+        ...     42,
+        ...     "ModifiedDate"
+        ... )
+    """
+    jdbc_url = build_fabric_jdbc_url(workspace_sql_endpoint, database_name)
+
+    query = (
+        f"SELECT TOP 1 WatermarkAfter "
+        f"FROM audit.EntityRuns "
+        f"WHERE EntityId = {entity_id} "
+        f"  AND Status = 'SUCCEEDED' "
+        f"ORDER BY EndTime DESC"
+    )
+
+    df = (
+        spark.read.format("jdbc")
+        .option("url", jdbc_url)
+        .option("query", query)
+        .option("authentication", "ActiveDirectoryMSI")
+        .load()
+    )
+
     if df.count() == 0:
         return None
     return df.collect()[0][0]
+
 
 def build_incremental_query(base_query, watermark_column, watermark_value, watermark_type="datetime"):
     if not watermark_value:
@@ -162,6 +273,7 @@ def build_incremental_query(base_query, watermark_column, watermark_value, water
     else:
         return f"{base_query} WHERE {condition}"
 
+
 def get_max_watermark(df, watermark_column):
     if not watermark_column or watermark_column not in df.columns:
         return None
@@ -171,6 +283,11 @@ def get_max_watermark(df, watermark_column):
     if isinstance(max_val, datetime):
         return max_val.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
     return str(max_val)
+
+
+# ============================================================================
+# SCHEMA DRIFT DETECTION & HANDLING
+# ============================================================================
 
 def detect_schema_drift(df, target_path):
     source_schema = {f.name: str(f.dataType) for f in df.schema.fields}
@@ -182,6 +299,7 @@ def detect_schema_drift(df, target_path):
     removed = [c for c in target_schema if c not in source_schema]
     type_changes = [{"column": c, "source_type": source_schema[c], "target_type": target_schema[c]} for c in source_schema if c in target_schema and source_schema[c] != target_schema[c]]
     return {"has_drift": bool(added or removed or type_changes), "added_columns": added, "removed_columns": removed, "type_changes": type_changes}
+
 
 def handle_schema_drift(df, target_path, strategy="merge"):
     drift = detect_schema_drift(df, target_path)
@@ -202,6 +320,11 @@ def handle_schema_drift(df, target_path, strategy="merge"):
             common_cols = [c for c in df.columns if c in target_df.columns]
             return df.select(*common_cols)
     return df
+
+
+# ============================================================================
+# DATA PROFILING
+# ============================================================================
 
 def profile_dataframe(df, sample_size=10000):
     total_rows = df.count()
@@ -263,6 +386,7 @@ def profile_dataframe(df, sample_size=10000):
         profile["columns"][col_name] = stats
     return profile
 
+
 def profile_to_delta(profile, target_path):
     profile_rows = []
     for col_name, stats in profile["columns"].items():
@@ -271,6 +395,11 @@ def profile_to_delta(profile, target_path):
     if profile_rows:
         profile_df = spark.createDataFrame(profile_rows)
         profile_df.write.format("delta").mode("append").save(target_path)
+
+
+# ============================================================================
+# RETRY & AUDIT UTILITIES
+# ============================================================================
 
 def retry_with_backoff(max_retries=3, base_delay=60, exponential_base=2.0, max_delay=600):
     def decorator(func):
@@ -291,6 +420,7 @@ def retry_with_backoff(max_retries=3, base_delay=60, exponential_base=2.0, max_d
         return wrapper
     return decorator
 
+
 def add_audit_columns(df, run_id, stage="bronze", source_name=None, entity_name=None):
     df = df.withColumn(f"_{stage}_ingestion_timestamp", F.current_timestamp()).withColumn(f"_{stage}_run_id", F.lit(run_id))
     if source_name:
@@ -299,6 +429,11 @@ def add_audit_columns(df, run_id, stage="bronze", source_name=None, entity_name=
         df = df.withColumn(f"_{stage}_entity_name", F.lit(entity_name))
     return df
 
+
+# ============================================================================
+# DELTA LAKE MAINTENANCE
+# ============================================================================
+
 def get_delta_stats(lakehouse, schema, table):
     path = f"abfss://{lakehouse}@onelake.dfs.fabric.microsoft.com/{schema}/{table}"
     if not DeltaTable.isDeltaTable(spark, path):
@@ -306,6 +441,7 @@ def get_delta_stats(lakehouse, schema, table):
     dt = DeltaTable.forPath(spark, path)
     detail = dt.detail().collect()[0]
     return {"num_files": detail.numFiles, "size_in_bytes": detail.sizeInBytes, "last_modified": str(detail.lastModified), "partition_columns": detail.partitionColumns, "num_partitions": len(detail.partitionColumns) if detail.partitionColumns else 0}
+
 
 def optimize_delta_table(lakehouse, schema, table, zorder_columns=None):
     path = f"abfss://{lakehouse}@onelake.dfs.fabric.microsoft.com/{schema}/{table}"
@@ -317,6 +453,7 @@ def optimize_delta_table(lakehouse, schema, table, zorder_columns=None):
         spark.sql(f"OPTIMIZE delta.`{path}` ZORDER BY ({cols})")
     spark.sql(f"VACUUM delta.`{path}` RETAIN 168 HOURS")
 
+
 def estimate_storage_cost(lakehouse, schema, table, cost_per_gb=0.023):
     stats = get_delta_stats(lakehouse, schema, table)
     if not stats:
@@ -324,5 +461,6 @@ def estimate_storage_cost(lakehouse, schema, table, cost_per_gb=0.023):
     size_gb = stats["size_in_bytes"] / (1024 ** 3)
     monthly_cost = size_gb * cost_per_gb
     return {"size_gb": round(size_gb, 4), "monthly_cost_usd": round(monthly_cost, 4), "num_files": stats["num_files"], "recommendation": "Run OPTIMIZE if num_files > 1000" if stats["num_files"] > 1000 else "OK"}
+
 
 print("FabricELT library loaded successfully")

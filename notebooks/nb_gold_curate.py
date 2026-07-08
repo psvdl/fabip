@@ -1,6 +1,7 @@
 # ============================================================================
 # GOLD CURATION NOTEBOOK
 # Production-ready dimension, fact, and aggregate model builder
+# Fabric SQL Database compatible (ActiveDirectoryMSI authentication)
 # ============================================================================
 
 import pyspark.sql.functions as F
@@ -10,32 +11,80 @@ import traceback
 import re
 from datetime import datetime
 
-dbutils.widgets.text("model_name", "all")
-dbutils.widgets.text("target_warehouse", "wh_gold")
-dbutils.widgets.text("target_schema", "curated")
-dbutils.widgets.text("run_id", "")
-dbutils.widgets.text("control_jdbc_url", "jdbc:sqlserver://placeholder;database=fabric_control;")
+# Fabric pipeline parameters are injected as notebook-scoped variables
+model_name = globals().get("model_name", "all")
+target_warehouse = globals().get("target_warehouse", "wh_gold")
+target_schema = globals().get("target_schema", "curated")
+run_id = globals().get("run_id", "")
+control_sql_endpoint = globals().get("control_sql_endpoint", "")
+control_database_name = globals().get("control_database_name", "fabric_control")
+key_vault_url = globals().get("key_vault_url", "")
 
-model_name = dbutils.widgets.get("model_name")
-target_warehouse = dbutils.widgets.get("target_warehouse")
-target_schema = dbutils.widgets.get("target_schema")
-run_id = dbutils.widgets.get("run_id")
-CONTROL_JDBC_URL = dbutils.widgets.get("control_jdbc_url")
+# Build Fabric SQL Database JDBC URL
+if control_sql_endpoint and control_sql_endpoint.strip():
+    CONTROL_JDBC_URL = (
+        f"jdbc:sqlserver://{control_sql_endpoint}:1433;"
+        f"database={control_database_name};"
+        f"encrypt=true;"
+        f"trustServerCertificate=false;"
+        f"hostNameInCertificate=*.sql.azuresynapse.net;"
+        f"loginTimeout=30;"
+    )
+else:
+    CONTROL_JDBC_URL = ""
+    print("WARNING: control_sql_endpoint is empty. Control DB operations will be skipped.")
+
+# Shared JDBC options for Fabric SQL Database
+_FABRIC_JDBC_OPTS = {
+    "authentication": "ActiveDirectoryMSI",
+}
+
+
+def _fabric_jdbc_read(query, prepared_statement_params=None):
+    """Execute a JDBC read against Fabric SQL Database with proper authentication and fallback."""
+    if not CONTROL_JDBC_URL:
+        raise ConnectionError("CONTROL_JDBC_URL is not configured. Cannot connect to Fabric SQL Database.")
+    reader = spark.read.format("jdbc") \
+        .option("url", CONTROL_JDBC_URL) \
+        .option("query", query)
+    for key, value in _FABRIC_JDBC_OPTS.items():
+        reader = reader.option(key, value)
+    if prepared_statement_params is not None:
+        reader = reader.option("prepareStatement", "true") \
+                       .option("preparedStatementParameters", json.dumps(prepared_statement_params))
+    return reader.load()
+
+
+def _fabric_jdbc_fallback_query(query):
+    """Execute a JDBC read using the fallback direct-query method with ActiveDirectoryMSI auth."""
+    return spark.read.format("jdbc") \
+        .option("url", CONTROL_JDBC_URL) \
+        .option("query", query) \
+        .option("authentication", "ActiveDirectoryMSI") \
+        .load()
+
 
 def get_gold_models_from_control_db():
     query = "SELECT ModelId, ModelName, ModelType, TargetWarehouse, TargetSchema, TargetTableName, SourceLakehouse, SourceSchema, SourceTables, GrainColumns, CalculatedColumns, Priority FROM cfg.GoldModels WHERE IsActive = 1"
-    if model_name != "all":
-        query += " AND ModelName = ?"
-        df = spark.read.format("jdbc").option("url", CONTROL_JDBC_URL).option("query", query).option("prepareStatement", "true").option("preparedStatementParameters", json.dumps([model_name])).load()
-    else:
-        df = spark.read.format("jdbc").option("url", CONTROL_JDBC_URL).option("query", query).load()
-    return df.collect()
+    try:
+        if model_name != "all":
+            query += " AND ModelName = ?"
+            df = _fabric_jdbc_read(query, [model_name])
+        else:
+            df = _fabric_jdbc_read(query)
+        return df.collect()
+    except Exception as e:
+        print(f"WARNING: Failed to load gold models from control DB: {str(e)}")
+        return []
 
 def log_gold_model_start(model_id, model_name, model_type, source_tables):
     try:
+        if not CONTROL_JDBC_URL:
+            print("WARNING: CONTROL_JDBC_URL not configured. Skipping audit logging.")
+            return str(datetime.now().timestamp())
         source_tables_json = json.dumps(source_tables) if isinstance(source_tables, list) else str(source_tables)
         query = f"EXEC audit.usp_LogGoldModelStart @RunId='{run_id}', @ModelId={model_id}, @ModelName='{model_name}', @ModelType='{model_type}', @SourceTables='{source_tables_json}'"
-        result_df = spark.read.format("jdbc").option("url", CONTROL_JDBC_URL).option("query", query).load()
+        result_df = _fabric_jdbc_fallback_query(query)
         if result_df.count() > 0:
             return str(result_df.collect()[0][0])
         return str(datetime.now().timestamp())
@@ -45,12 +94,15 @@ def log_gold_model_start(model_id, model_name, model_type, source_tables):
 
 def log_gold_model_end(gold_run_id, status, rows_read=0, rows_written=0, error_message=None, cu_consumed=None, spark_app_id=None):
     try:
+        if not CONTROL_JDBC_URL:
+            print("WARNING: CONTROL_JDBC_URL not configured. Skipping audit logging.")
+            return
         error_msg = error_message.replace("'", "''") if error_message else None
         error_param = f"'{error_msg}'" if error_msg else "NULL"
         cu_param = str(cu_consumed) if cu_consumed else "NULL"
         spark_param = f"'{spark_app_id}'" if spark_app_id else "NULL"
         query = f"EXEC audit.usp_LogGoldModelEnd @GoldRunId='{gold_run_id}', @Status='{status}', @ErrorMessage={error_param}, @RowsRead={rows_read}, @RowsWritten={rows_written}, @CUConsumed={cu_param}, @SparkApplicationId={spark_param}"
-        spark.read.format("jdbc").option("url", CONTROL_JDBC_URL).option("query", query).load()
+        _fabric_jdbc_fallback_query(query)
     except Exception as e:
         print(f"LOGGING WARNING (end): {str(e)}")
 
@@ -83,8 +135,6 @@ def build_fact_model(model_config):
     primary_table = source_tables[0]
     df_fact = read_silver_table(model_config.SourceLakehouse, model_config.SourceSchema, primary_table)
 
-    # FIXED: model_config is a Spark Row object, not a dict. Row objects don't have .get() method.
-    # Use getattr with a default value instead to safely access attributes that may not exist.
     join_configs = getattr(model_config, 'JoinConfigs', None)
     if join_configs and isinstance(join_configs, str):
         try:

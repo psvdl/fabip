@@ -1,19 +1,45 @@
 {
   "name": "pl_cost_optimization",
   "properties": {
-    "description": "Automated cost optimization: capacity scheduling, storage cleanup",
+    "description": "Automated cost optimization: capacity scheduling, storage cleanup (Fabric-compatible)",
     "activities": [
       {
         "name": "Run Cost Optimization Script",
-        "type": "AzureMLExecutePipeline",
+        "type": "Notebook",
         "dependsOn": [],
+        "policy": {
+          "timeout": "0.02:00:00",
+          "retry": 1,
+          "retryIntervalInSeconds": 30
+        },
         "typeProperties": {
-          "mlPipelineId": "cost-optimization-pipeline"
+          "notebook": {
+            "referenceName": "nb_cost_optimization",
+            "type": "NotebookReference"
+          },
+          "parameters": {
+            "action": {
+              "value": "optimize_all",
+              "type": "String"
+            },
+            "control_sql_endpoint": {
+              "value": "@pipeline().parameters.control_sql_endpoint",
+              "type": "Expression"
+            },
+            "control_database_name": {
+              "value": "@pipeline().parameters.control_database_name",
+              "type": "Expression"
+            },
+            "key_vault_url": {
+              "value": "@pipeline().parameters.key_vault_url",
+              "type": "Expression"
+            }
+          }
         }
       },
       {
         "name": "Log Cost Optimization",
-        "type": "SqlServerStoredProcedure",
+        "type": "Notebook",
         "dependsOn": [
           {
             "activity": "Run Cost Optimization Script",
@@ -22,24 +48,56 @@
             ]
           }
         ],
+        "policy": {
+          "timeout": "0.00:05:00",
+          "retry": 2
+        },
         "typeProperties": {
-          "storedProcedureName": "[audit].[usp_LogPipelineEnd]",
-          "storedProcedureParameters": {
-            "RunId": {
-              "value": "@guid()",
+          "notebook": {
+            "referenceName": "nb_sql_execute",
+            "type": "NotebookReference"
+          },
+          "parameters": {
+            "control_sql_endpoint": {
+              "value": "@pipeline().parameters.control_sql_endpoint",
+              "type": "Expression"
+            },
+            "control_database_name": {
+              "value": "@pipeline().parameters.control_database_name",
+              "type": "Expression"
+            },
+            "stored_procedure_name": {
+              "value": "[audit].[usp_LogPipelineEnd]",
               "type": "String"
             },
-            "Status": {
-              "value": "SUCCEEDED",
-              "type": "String"
+            "stored_procedure_params_json": {
+              "value": "@{json(concat('{', '\"RunId\":\"', guid(), '\",\"Status\":\"', if(equals(activity('Run Cost Optimization Script').status, 'Succeeded'), 'SUCCEEDED', 'FAILED'), '\",\"ErrorMessage\":\"', if(equals(activity('Run Cost Optimization Script').status, 'Succeeded'), '', coalesce(activity('Run Cost Optimization Script').error.message, '')), '\",\"RowsRead\":', coalesce(string(activity('Run Cost Optimization Script').output.runOutput), '0'), ',\"RowsWritten\":', coalesce(string(activity('Run Cost Optimization Script').output.runOutput), '0'), '}'))}",
+              "type": "Expression"
+            },
+            "key_vault_url": {
+              "value": "@pipeline().parameters.key_vault_url",
+              "type": "Expression"
             }
           }
-        },
-        "dataset": {
-          "referenceName": "ds_control_database",
-          "type": "DatasetReference"
         }
       }
-    ]
+    ],
+    "parameters": {
+      "control_sql_endpoint": {
+        "type": "String",
+        "defaultValue": "<workspace>.sql.azuresynapse.net"
+      },
+      "control_database_name": {
+        "type": "String",
+        "defaultValue": "fabric_control"
+      },
+      "key_vault_url": {
+        "type": "String",
+        "defaultValue": "https://<vault>.vault.azure.net/"
+      }
+    },
+    "variables": {},
+    "annotations": [],
+    "lastPublishTime": "2026-06-21T00:00:00Z"
   }
 }

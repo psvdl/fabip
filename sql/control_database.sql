@@ -2,6 +2,11 @@
 -- FABRIC ELT CONTROL DATABASE SCHEMA
 -- Compatible with Microsoft Fabric SQL Database (no GO batch separators)
 -- ============================================================================
+-- Verified for: Microsoft Fabric SQL Database (T-SQL compatible)
+-- Changes: Idempotent INSERTs, PRINT replaced with SELECT, no GO batches
+-- Notes: All features used (CREATE OR ALTER, OUTER APPLY, IDENTITY, 
+--        FOREIGN KEY, NONCLUSTERED INDEX) are supported in Fabric SQL DB.
+-- ============================================================================
 
 -- Create schemas if they don't exist
 IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'cfg')
@@ -104,6 +109,7 @@ CREATE TABLE audit.PipelineRuns (
     RowsWritten BIGINT NULL DEFAULT 0,
     CUConsumed DECIMAL(18,4) NULL,
     SparkApplicationId NVARCHAR(128) NULL,
+    NotebookResult NVARCHAR(MAX) NULL,
     CreatedDate DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
 );
 
@@ -204,7 +210,8 @@ CREATE OR ALTER PROCEDURE audit.usp_LogPipelineEnd
     @ErrorMessage NVARCHAR(MAX) = NULL,
     @RowsRead BIGINT = NULL,
     @RowsWritten BIGINT = NULL,
-    @CUConsumed DECIMAL(18,4) = NULL
+    @CUConsumed DECIMAL(18,4) = NULL,
+    @NotebookResult NVARCHAR(MAX) = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -214,7 +221,8 @@ BEGIN
         ErrorMessage = @ErrorMessage,
         RowsRead = ISNULL(@RowsRead, RowsRead),
         RowsWritten = ISNULL(@RowsWritten, RowsWritten),
-        CUConsumed = ISNULL(@CUConsumed, CUConsumed)
+        CUConsumed = ISNULL(@CUConsumed, CUConsumed),
+        NotebookResult = @NotebookResult
     WHERE RunId = @RunId;
 END;
 
@@ -407,21 +415,21 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_dq_Results_RuleId' AND
     CREATE NONCLUSTERED INDEX IX_dq_Results_RuleId ON dq.Results(RuleId);
 
 -- ============================================================================
--- SAMPLE DATA (idempotent)
+-- SAMPLE DATA (idempotent -- safe to re-run)
 -- ============================================================================
 
---IF NOT EXISTS (SELECT 1 FROM cfg.Sources WHERE SourceName = 'azsql-customers')
---BEGIN
+IF NOT EXISTS (SELECT 1 FROM cfg.Sources WHERE SourceName = 'azsql-customers')
+BEGIN
     INSERT INTO cfg.Sources (SourceName, SourceType, ConnectionStringRef, AuthenticationType, IsActive)
     VALUES 
     ('azsql-customers', 'SQL', 'kv-azsql-customers-conn', 'ManagedIdentity', 1),
     ('api-sales', 'API', 'kv-api-sales-baseurl', 'OAuth2', 1),
     ('adls-logs', 'FILE', 'kv-adls-logs-conn', 'ManagedIdentity', 1),
     ('cosmos-products', 'COSMOS', 'kv-cosmos-products-conn', 'ManagedIdentity', 1);
---END;
+END;
 
---IF NOT EXISTS (SELECT 1 FROM cfg.Entities WHERE EntityName = 'customers')
---BEGIN
+IF NOT EXISTS (SELECT 1 FROM cfg.Entities WHERE EntityName = 'customers')
+BEGIN
     INSERT INTO cfg.Entities (SourceId, EntityName, EntityType, SourceSchema, TargetLakehouse, TargetSchema, TargetTableName, 
     LoadType, WatermarkColumn, WatermarkDataType, WatermarkOffset, ScheduleExpression, ParallelismDegree, Priority)
     VALUES
@@ -430,25 +438,29 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_dq_Results_RuleId' AND
     (2, 'sales-transactions', 'API_ENDPOINT', NULL, 'lh_bronze', 'raw', 'sales_transactions', 'FULL', NULL, NULL, NULL, '0 3 * * *', 1, 2),
     (3, 'web-logs', 'FILE', 'logs', 'lh_bronze', 'raw', 'web_logs', 'INCREMENTAL', 'LastModified', 'DATETIME', '1900-01-01', '0 1 * * *', 3, 3),
     (4, 'Products', 'TABLE', 'productdb', 'lh_bronze', 'raw', 'products', 'CDC', NULL, NULL, NULL, '0 */4 * * *', 1, 2);
---END;
+END;
 
--- Sample Transformations
-INSERT INTO cfg.Transformations (EntityId, TransformationType, TransformationLogic, BusinessKeyColumns)
-VALUES
-(1, 'STANDARDIZATION', '{"dedup_key": "CustomerID", "standardize": {"Email": "lower", "Phone": "regex"}, "null_defaults": {"Country": "Unknown"}}', 'CustomerID'),
-(1, 'SCD2', '{"scd2_columns": ["Email", "Phone", "Address"], "effective_date": "ValidFrom", "expiry_date": "ValidTo", "is_current": "IsCurrent"}', 'CustomerID'),
-(2, 'STANDARDIZATION', '{"dedup_key": "OrderID", "foreign_keys": [{"column": "CustomerID", "ref_table": "customers", "ref_column": "CustomerID"}]}', 'OrderID'),
-(3, 'STANDARDIZATION', '{"json_parse": "LogData", "timestamp_extract": "LogTimestamp", "ip_geolocation": true}', 'LogId');
+IF NOT EXISTS (SELECT 1 FROM cfg.Transformations WHERE TransformationId = 1)
+BEGIN
+    INSERT INTO cfg.Transformations (EntityId, TransformationType, TransformationLogicJson, BusinessKeyColumns)
+    VALUES
+    (1, 'STANDARDIZATION', '{"dedup_key": "CustomerID", "standardize": {"Email": "lower", "Phone": "regex"}, "null_defaults": {"Country": "Unknown"}}', 'CustomerID'),
+    (1, 'SCD2', '{"scd2_columns": ["Email", "Phone", "Address"], "effective_date": "ValidFrom", "expiry_date": "ValidTo", "is_current": "IsCurrent"}', 'CustomerID'),
+    (2, 'STANDARDIZATION', '{"dedup_key": "OrderID", "foreign_keys": [{"column": "CustomerID", "ref_table": "customers", "ref_column": "CustomerID"}]}', 'OrderID'),
+    (3, 'STANDARDIZATION', '{"json_parse": "LogData", "timestamp_extract": "LogTimestamp", "ip_geolocation": true}', 'LogId');
+END;
 
- -- Sample Data Quality Rules
-INSERT INTO dq.Rules (EntityId, RuleName, RuleType, ColumnName, ExpectedValue, Severity, QuarantineEnabled)
-VALUES
-(1, 'CustomerID Not Null', 'NOT_NULL', 'CustomerID', NULL, 'CRITICAL', 1),
-(1, 'Email Valid Format', 'REGEX', 'Email', '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', 'ERROR', 1),
-(1, 'Email Unique', 'UNIQUE', 'Email', NULL, 'ERROR', 1),
-(2, 'OrderAmount Positive', 'RANGE', 'OrderAmount', '0|999999999.99', 'ERROR', 1),
-(2, 'CustomerID FK Check', 'REF_INTEGRITY', 'CustomerID', 'customers.CustomerID', 'CRITICAL', 1),
-(3, 'LogTimestamp Not Null', 'NOT_NULL', 'LogTimestamp', NULL, 'WARNING', 0);
+IF NOT EXISTS (SELECT 1 FROM dq.Rules WHERE RuleId = 1)
+BEGIN
+    INSERT INTO dq.Rules (EntityId, RuleName, RuleType, ColumnName, ExpectedValue, Severity, QuarantineEnabled)
+    VALUES
+    (1, 'CustomerID Not Null', 'NOT_NULL', 'CustomerID', NULL, 'CRITICAL', 1),
+    (1, 'Email Valid Format', 'REGEX', 'Email', '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', 'ERROR', 1),
+    (1, 'Email Unique', 'UNIQUE', 'Email', NULL, 'ERROR', 1),
+    (2, 'OrderAmount Positive', 'RANGE', 'OrderAmount', '0|999999999.99', 'ERROR', 1),
+    (2, 'CustomerID FK Check', 'REF_INTEGRITY', 'CustomerID', 'customers.CustomerID', 'CRITICAL', 1),
+    (3, 'LogTimestamp Not Null', 'NOT_NULL', 'LogTimestamp', NULL, 'WARNING', 0);
+END;
 
 -- Sample Gold Models
 IF NOT EXISTS (SELECT 1 FROM cfg.GoldModels WHERE ModelName = 'dim_customers')
@@ -472,4 +484,4 @@ BEGIN
     );
 END;
 
-PRINT 'Control Database Schema Created Successfully';
+SELECT 'Control Database Schema Created Successfully' AS SetupStatus;

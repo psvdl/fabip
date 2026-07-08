@@ -1,22 +1,40 @@
 {
   "name": "pl_schema_drift_detection",
   "properties": {
-    "description": "Pre-ingestion schema drift detection for all entities",
+    "description": "Pre-ingestion schema drift detection for all entities (Fabric-compatible)",
     "activities": [
       {
         "name": "Lookup Entities",
-        "type": "Lookup",
+        "type": "Notebook",
         "dependsOn": [],
+        "policy": {
+          "timeout": "0.10:00:00",
+          "retry": 2,
+          "retryIntervalInSeconds": 30
+        },
         "typeProperties": {
-          "source": {
-            "type": "AzureSqlSource",
-            "sqlReaderQuery": "SELECT EntityId, EntityName, TargetLakehouse, TargetSchema, TargetTableName FROM cfg.Entities WHERE IsActive = 1"
+          "notebook": {
+            "referenceName": "nb_sql_lookup",
+            "type": "NotebookReference"
           },
-          "dataset": {
-            "referenceName": "ds_control_database",
-            "type": "DatasetReference"
-          },
-          "firstRowOnly": false
+          "parameters": {
+            "control_sql_endpoint": {
+              "value": "@pipeline().parameters.control_sql_endpoint",
+              "type": "Expression"
+            },
+            "control_database_name": {
+              "value": "@pipeline().parameters.control_database_name",
+              "type": "Expression"
+            },
+            "query": {
+              "value": "SELECT EntityId, EntityName, TargetLakehouse, TargetSchema, TargetTableName FROM cfg.Entities WHERE IsActive = 1",
+              "type": "String"
+            },
+            "key_vault_url": {
+              "value": "@pipeline().parameters.key_vault_url",
+              "type": "Expression"
+            }
+          }
         }
       },
       {
@@ -32,7 +50,7 @@
         ],
         "typeProperties": {
           "items": {
-            "value": "@activity('Lookup Entities').output.value",
+            "value": "@activity('Lookup Entities').output.runOutput",
             "type": "Expression"
           },
           "isSequential": true,
@@ -65,6 +83,18 @@
                   "drift_strategy": {
                     "value": "alert",
                     "type": "String"
+                  },
+                  "control_sql_endpoint": {
+                    "value": "@pipeline().parameters.control_sql_endpoint",
+                    "type": "Expression"
+                  },
+                  "control_database_name": {
+                    "value": "@pipeline().parameters.control_database_name",
+                    "type": "Expression"
+                  },
+                  "key_vault_url": {
+                    "value": "@pipeline().parameters.key_vault_url",
+                    "type": "Expression"
                   }
                 }
               }
@@ -72,6 +102,23 @@
           ]
         }
       }
-    ]
+    ],
+    "parameters": {
+      "control_sql_endpoint": {
+        "type": "String",
+        "defaultValue": "<workspace>.sql.azuresynapse.net"
+      },
+      "control_database_name": {
+        "type": "String",
+        "defaultValue": "fabric_control"
+      },
+      "key_vault_url": {
+        "type": "String",
+        "defaultValue": "https://<vault>.vault.azure.net/"
+      }
+    },
+    "variables": {},
+    "annotations": [],
+    "lastPublishTime": "2026-06-21T00:00:00Z"
   }
 }

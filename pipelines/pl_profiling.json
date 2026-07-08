@@ -1,7 +1,7 @@
 {
   "name": "pl_profiling",
   "properties": {
-    "description": "Weekly data profiling for all tables",
+    "description": "Weekly data profiling for all tables (Fabric-compatible)",
     "activities": [
       {
         "name": "Profile Bronze Tables",
@@ -38,6 +38,18 @@
                   "sample_size": {
                     "value": "100000",
                     "type": "String"
+                  },
+                  "control_sql_endpoint": {
+                    "value": "@pipeline().parameters.control_sql_endpoint",
+                    "type": "Expression"
+                  },
+                  "control_database_name": {
+                    "value": "@pipeline().parameters.control_database_name",
+                    "type": "Expression"
+                  },
+                  "key_vault_url": {
+                    "value": "@pipeline().parameters.key_vault_url",
+                    "type": "Expression"
                   }
                 }
               }
@@ -45,6 +57,23 @@
           ]
         }
       }
-    ]
+    ],
+    "parameters": {
+      "control_sql_endpoint": {
+        "type": "String",
+        "defaultValue": "<workspace>.sql.azuresynapse.net"
+      },
+      "control_database_name": {
+        "type": "String",
+        "defaultValue": "fabric_control"
+      },
+      "key_vault_url": {
+        "type": "String",
+        "defaultValue": "https://<vault>.vault.azure.net/"
+      }
+    },
+    "variables": {},
+    "annotations": [],
+    "lastPublishTime": "2026-06-21T00:00:00Z"
   }
 }

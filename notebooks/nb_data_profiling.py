@@ -9,15 +9,14 @@ from pyspark.sql.types import *
 import json
 from datetime import datetime
 
-dbutils.widgets.text("lakehouse", "lh_bronze")
-dbutils.widgets.text("schema", "raw")
-dbutils.widgets.text("table", "")
-dbutils.widgets.text("sample_size", "100000")
-
-lakehouse = dbutils.widgets.get("lakehouse")
-schema = dbutils.widgets.get("schema")
-table = dbutils.widgets.get("table")
-sample_size = int(dbutils.widgets.get("sample_size"))
+# Fabric pipeline parameters are injected as notebook-scoped variables
+lakehouse = globals().get("lakehouse", "lh_bronze")
+schema = globals().get("schema", "raw")
+table = globals().get("table", "")
+sample_size = int(globals().get("sample_size", "100000"))
+control_sql_endpoint = globals().get("control_sql_endpoint", "")
+control_database_name = globals().get("control_database_name", "fabric_control")
+key_vault_url = globals().get("key_vault_url", "")
 
 def profile_table(lakehouse, schema, table, sample_size=100000):
     path = f"abfss://{lakehouse}@onelake.dfs.fabric.microsoft.com/{schema}/{table}"

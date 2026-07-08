@@ -9,17 +9,12 @@ from delta.tables import DeltaTable
 import json
 from datetime import datetime, timedelta
 
-dbutils.widgets.text("lakehouse_name", "lh_bronze")
-dbutils.widgets.text("schema_name", "raw")
-dbutils.widgets.text("dry_run", "true")
-dbutils.widgets.text("retention_days", "90")
-dbutils.widgets.text("timestamp_column", "_bronze_ingestion_timestamp")
-
-lakehouse_name = dbutils.widgets.get("lakehouse_name")
-schema_name = dbutils.widgets.get("schema_name")
-dry_run = dbutils.widgets.get("dry_run").lower() == "true"
-retention_days = int(dbutils.widgets.get("retention_days"))
-timestamp_column = dbutils.widgets.get("timestamp_column")
+# Fabric pipeline parameters are injected as notebook-scoped variables
+lakehouse_name = globals().get("lakehouse_name", "lh_bronze")
+schema_name = globals().get("schema_name", "raw")
+dry_run = globals().get("dry_run", "true").lower() == "true"
+retention_days = int(globals().get("retention_days", "90"))
+timestamp_column = globals().get("timestamp_column", "_bronze_ingestion_timestamp")
 
 def get_delta_tables(lakehouse, schema):
     schema_path = f"abfss://{lakehouse}@onelake.dfs.fabric.microsoft.com/{schema}"

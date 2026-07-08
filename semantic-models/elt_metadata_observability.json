@@ -1,0 +1,244 @@
+{
+  "name": "ELTMetadataObservability",
+  "compatibilityLevel": 1601,
+  "model": {
+    "tables": [
+      {
+        "name": "PipelineRuns",
+        "columns": [
+          {
+            "name": "RunId",
+            "dataType": "string",
+            "sourceColumn": "RunId"
+          },
+          {
+            "name": "PipelineName",
+            "dataType": "string",
+            "sourceColumn": "PipelineName"
+          },
+          {
+            "name": "Status",
+            "dataType": "string",
+            "sourceColumn": "Status"
+          },
+          {
+            "name": "StartTime",
+            "dataType": "dateTime",
+            "sourceColumn": "StartTime"
+          },
+          {
+            "name": "EndTime",
+            "dataType": "dateTime",
+            "sourceColumn": "EndTime"
+          },
+          {
+            "name": "DurationSeconds",
+            "dataType": "int64",
+            "sourceColumn": "DurationSeconds"
+          },
+          {
+            "name": "RowsRead",
+            "dataType": "int64",
+            "sourceColumn": "RowsRead"
+          },
+          {
+            "name": "RowsWritten",
+            "dataType": "int64",
+            "sourceColumn": "RowsWritten"
+          },
+          {
+            "name": "ErrorMessage",
+            "dataType": "string",
+            "sourceColumn": "ErrorMessage"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "PipelineRuns",
+            "mode": "directLake",
+            "source": {
+              "type": "entity",
+              "entityName": "vw_PipelineRunSummary",
+              "schemaName": "audit",
+              "expression": "fabric_control"
+            }
+          }
+        ]
+      },
+      {
+        "name": "EntityRuns",
+        "columns": [
+          {
+            "name": "EntityRunId",
+            "dataType": "string",
+            "sourceColumn": "EntityRunId"
+          },
+          {
+            "name": "RunId",
+            "dataType": "string",
+            "sourceColumn": "RunId"
+          },
+          {
+            "name": "EntityId",
+            "dataType": "int64",
+            "sourceColumn": "EntityId"
+          },
+          {
+            "name": "EntityName",
+            "dataType": "string",
+            "sourceColumn": "EntityName"
+          },
+          {
+            "name": "Status",
+            "dataType": "string",
+            "sourceColumn": "Status"
+          },
+          {
+            "name": "StartTime",
+            "dataType": "dateTime",
+            "sourceColumn": "StartTime"
+          },
+          {
+            "name": "EndTime",
+            "dataType": "dateTime",
+            "sourceColumn": "EndTime"
+          },
+          {
+            "name": "RowsRead",
+            "dataType": "int64",
+            "sourceColumn": "RowsRead"
+          },
+          {
+            "name": "RowsWritten",
+            "dataType": "int64",
+            "sourceColumn": "RowsWritten"
+          },
+          {
+            "name": "WatermarkAfter",
+            "dataType": "string",
+            "sourceColumn": "WatermarkAfter"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "EntityRuns",
+            "mode": "directLake",
+            "source": {
+              "type": "entity",
+              "entityName": "EntityRuns",
+              "schemaName": "audit",
+              "expression": "fabric_control"
+            }
+          }
+        ]
+      },
+      {
+        "name": "GoldModelRuns",
+        "columns": [
+          {
+            "name": "GoldRunId",
+            "dataType": "string",
+            "sourceColumn": "GoldRunId"
+          },
+          {
+            "name": "RunId",
+            "dataType": "string",
+            "sourceColumn": "RunId"
+          },
+          {
+            "name": "ModelId",
+            "dataType": "int64",
+            "sourceColumn": "ModelId"
+          },
+          {
+            "name": "ModelName",
+            "dataType": "string",
+            "sourceColumn": "ModelName"
+          },
+          {
+            "name": "ModelType",
+            "dataType": "string",
+            "sourceColumn": "ModelType"
+          },
+          {
+            "name": "Status",
+            "dataType": "string",
+            "sourceColumn": "Status"
+          },
+          {
+            "name": "StartTime",
+            "dataType": "dateTime",
+            "sourceColumn": "StartTime"
+          },
+          {
+            "name": "EndTime",
+            "dataType": "dateTime",
+            "sourceColumn": "EndTime"
+          },
+          {
+            "name": "RowsRead",
+            "dataType": "int64",
+            "sourceColumn": "RowsRead"
+          },
+          {
+            "name": "RowsWritten",
+            "dataType": "int64",
+            "sourceColumn": "RowsWritten"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "GoldModelRuns",
+            "mode": "directLake",
+            "source": {
+              "type": "entity",
+              "entityName": "vw_GoldModelRunSummary",
+              "schemaName": "audit",
+              "expression": "fabric_control"
+            }
+          }
+        ]
+      }
+    ],
+    "relationships": [
+      {
+        "name": "EntityRuns_to_PipelineRuns",
+        "fromTable": "EntityRuns",
+        "fromColumn": "RunId",
+        "toTable": "PipelineRuns",
+        "toColumn": "RunId",
+        "crossFilteringBehavior": "bothDirections"
+      },
+      {
+        "name": "GoldModelRuns_to_PipelineRuns",
+        "fromTable": "GoldModelRuns",
+        "fromColumn": "RunId",
+        "toTable": "PipelineRuns",
+        "toColumn": "RunId",
+        "crossFilteringBehavior": "bothDirections"
+      }
+    ],
+    "measures": [
+      {
+        "name": "Total Pipeline Runs",
+        "expression": "COUNTROWS(PipelineRuns)",
+        "formatString": "#,##0"
+      },
+      {
+        "name": "Success Rate",
+        "expression": "DIVIDE(COUNTROWS(FILTER(PipelineRuns, PipelineRuns[Status] = \"SUCCEEDED\")), COUNTROWS(PipelineRuns), 0)",
+        "formatString": "0.00%"
+      },
+      {
+        "name": "Avg Duration (s)",
+        "expression": "AVERAGE(PipelineRuns[DurationSeconds])",
+        "formatString": "#,##0"
+      },
+      {
+        "name": "Total Rows Processed",
+        "expression": "SUM(PipelineRuns[RowsRead])",
+        "formatString": "#,##0"
+      }
+    ]
+  }
+}

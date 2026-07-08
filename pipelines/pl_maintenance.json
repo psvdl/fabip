@@ -1,0 +1,141 @@
+{
+  "name": "pl_maintenance",
+  "properties": {
+    "description": "Automated lakehouse maintenance: OPTIMIZE, VACUUM, compaction, and statistics",
+    "activities": [
+      {
+        "name": "Maintenance Bronze",
+        "type": "Notebook",
+        "dependsOn": [],
+        "policy": {
+          "timeout": "0.02:00:00",
+          "retry": 1
+        },
+        "typeProperties": {
+          "notebook": {
+            "referenceName": "nb_lakehouse_maintenance",
+            "type": "NotebookReference"
+          },
+          "parameters": {
+            "lakehouse_name": {
+              "value": "lh_bronze",
+              "type": "String"
+            },
+            "schema_name": {
+              "value": "raw",
+              "type": "String"
+            },
+            "dry_run": {
+              "value": "false",
+              "type": "String"
+            }
+          }
+        }
+      },
+      {
+        "name": "Maintenance Silver",
+        "type": "Notebook",
+        "dependsOn": [
+          {
+            "activity": "Maintenance Bronze",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          }
+        ],
+        "policy": {
+          "timeout": "0.02:00:00",
+          "retry": 1
+        },
+        "typeProperties": {
+          "notebook": {
+            "referenceName": "nb_lakehouse_maintenance",
+            "type": "NotebookReference"
+          },
+          "parameters": {
+            "lakehouse_name": {
+              "value": "lh_silver",
+              "type": "String"
+            },
+            "schema_name": {
+              "value": "cleaned",
+              "type": "String"
+            },
+            "dry_run": {
+              "value": "false",
+              "type": "String"
+            }
+          }
+        }
+      },
+      {
+        "name": "Maintenance Gold",
+        "type": "Notebook",
+        "dependsOn": [
+          {
+            "activity": "Maintenance Silver",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          }
+        ],
+        "policy": {
+          "timeout": "0.02:00:00",
+          "retry": 1
+        },
+        "typeProperties": {
+          "notebook": {
+            "referenceName": "nb_lakehouse_maintenance",
+            "type": "NotebookReference"
+          },
+          "parameters": {
+            "lakehouse_name": {
+              "value": "lh_gold",
+              "type": "String"
+            },
+            "schema_name": {
+              "value": "curated",
+              "type": "String"
+            },
+            "dry_run": {
+              "value": "false",
+              "type": "String"
+            }
+          }
+        }
+      },
+      {
+        "name": "Log Maintenance Run",
+        "type": "SqlServerStoredProcedure",
+        "dependsOn": [
+          {
+            "activity": "Maintenance Gold",
+            "dependencyConditions": [
+              "Completed"
+            ]
+          }
+        ],
+        "policy": {
+          "timeout": "0.00:05:00"
+        },
+        "typeProperties": {
+          "storedProcedureName": "[audit].[usp_LogPipelineEnd]",
+          "storedProcedureParameters": {
+            "RunId": {
+              "value": "@guid()",
+              "type": "String"
+            },
+            "Status": {
+              "value": "SUCCEEDED",
+              "type": "String"
+            }
+          }
+        },
+        "dataset": {
+          "referenceName": "ds_control_database",
+          "type": "DatasetReference"
+        }
+      }
+    ]
+  }
+}

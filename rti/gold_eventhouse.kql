@@ -1,0 +1,65 @@
+// ============================================================================
+// GOLD EVENTHOUSE TABLES
+// Pre-aggregated real-time analytics
+// ============================================================================
+
+.create table MerchantMetrics (
+    MerchantId: string,
+    Hour: datetime,
+    TransactionCount: long,
+    TotalRevenue: decimal,
+    UniqueCustomers: long,
+    AvgTransactionValue: decimal,
+    FraudRate: decimal
+) with (docstring = "Real-time merchant performance metrics")
+
+.create table UserBehavior (
+    UserId: string,
+    Hour: datetime,
+    SessionCount: long,
+    PageViews: long,
+    AvgSessionDuration: long,
+    BounceRate: decimal,
+    TopPage: string
+) with (docstring = "Real-time user behavior analytics")
+
+// Update Policies from Silver
+.alter table MerchantMetrics policy update
+@'[{"Source": "database("SilverEventhouse").TransactionsCleaned", "Query": "TransactionsCleaned | summarize TransactionCount = count(), TotalRevenue = sum(AmountUSD), UniqueCustomers = dcount(UserId), AvgTransactionValue = avg(AmountUSD), FraudRate = countif(Status == "Fraud") * 100.0 / count() by MerchantId, bin(Timestamp, 1h)"}]'
+
+.alter table UserBehavior policy update
+@'[{"Source": "database("SilverEventhouse").WebEventsCleaned", "Query": "WebEventsCleaned | summarize SessionCount = dcount(SessionId), PageViews = count(), AvgSessionDuration = avg(DurationMs), BounceRate = avg(toint(IsBounce)) * 100.0, TopPage = arg_max(PageUrl, 1) by UserId, bin(Timestamp, 1h)"}]'
+
+// Materialized Views for sub-second queries
+.create materialized-view MerchantMetricsRealtime on table MerchantMetrics
+{
+    MerchantMetrics
+    | summarize TransactionCount = sum(TransactionCount), TotalRevenue = sum(TotalRevenue), UniqueCustomers = sum(UniqueCustomers), AvgTransactionValue = avg(AvgTransactionValue), FraudRate = avg(FraudRate) by MerchantId, bin(Hour, 1h)
+}
+
+// Functions for alerting
+.create function FraudAlert() {
+    database("SilverEventhouse").TransactionsCleaned
+    | where IsHighValue and Status == "Fraud"
+    | summarize FraudCount = count(), TotalFraudAmount = sum(AmountUSD) by MerchantId, bin(Timestamp, 5m)
+    | where FraudCount > 3
+}
+
+.create function HighValueTransactionAlert() {
+    database("SilverEventhouse").TransactionsCleaned
+    | where AmountUSD > 10000
+    | project TransactionId, UserId, MerchantId, AmountUSD, Timestamp
+}
+
+.create function DeviceAnomalyAlert() {
+    database("SilverEventhouse").IoTDevicesCleaned
+    | where IsAnomaly
+    | summarize AnomalyCount = count() by DeviceId, bin(Timestamp, 5m)
+    | where AnomalyCount > 5
+}
+
+// OneLake availability for long-term retention
+.alter table MerchantMetrics policy streamingingestion enable
+.alter table UserBehavior policy streamingingestion enable
+
+print "Gold Eventhouse tables, update policies, and functions created"

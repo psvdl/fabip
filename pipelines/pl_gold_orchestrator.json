@@ -1,0 +1,140 @@
+{
+  "name": "pl_gold_orchestrator",
+  "properties": {
+    "description": "Dedicated pipeline for Gold layer curation with dependency management",
+    "activities": [
+      {
+        "name": "Lookup Gold Models",
+        "type": "Lookup",
+        "dependsOn": [],
+        "policy": {
+          "timeout": "0.05:00:00",
+          "retry": 2,
+          "retryIntervalInSeconds": 30
+        },
+        "typeProperties": {
+          "source": {
+            "type": "AzureSqlSource",
+            "sqlReaderStoredProcedureName": "[cfg].[usp_GetGoldModelsToProcess]",
+            "storedProcedureParameters": {
+              "ModelId": {
+                "type": "Int32",
+                "value": null
+              }
+            }
+          },
+          "dataset": {
+            "referenceName": "ds_control_database",
+            "type": "DatasetReference"
+          },
+          "firstRowOnly": false
+        }
+      },
+      {
+        "name": "ForEach Gold Model",
+        "type": "ForEach",
+        "dependsOn": [
+          {
+            "activity": "Lookup Gold Models",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          }
+        ],
+        "typeProperties": {
+          "items": {
+            "value": "@activity('Lookup Gold Models').output.value",
+            "type": "Expression"
+          },
+          "isSequential": true
+        },
+        "activities": [
+          {
+            "name": "Gold Model Curation",
+            "type": "Notebook",
+            "dependsOn": [],
+            "policy": {
+              "timeout": "0.02:00:00",
+              "retry": 2,
+              "retryIntervalInSeconds": 60
+            },
+            "typeProperties": {
+              "notebook": {
+                "referenceName": "nb_gold_curate",
+                "type": "NotebookReference"
+              },
+              "parameters": {
+                "model_name": {
+                  "value": "@item().ModelName",
+                  "type": "Expression"
+                },
+                "target_warehouse": {
+                  "value": "@item().TargetWarehouse",
+                  "type": "Expression"
+                },
+                "target_schema": {
+                  "value": "@item().TargetSchema",
+                  "type": "Expression"
+                },
+                "run_id": {
+                  "value": "@pipeline().RunId",
+                  "type": "Expression"
+                },
+                "control_jdbc_url": {
+                  "value": "@pipeline().parameters.control_jdbc_url",
+                  "type": "Expression"
+                }
+              }
+            }
+          },
+          {
+            "name": "Log Gold Model Run",
+            "type": "SqlServerStoredProcedure",
+            "dependsOn": [
+              {
+                "activity": "Gold Model Curation",
+                "dependencyConditions": [
+                  "Completed"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.00:02:00",
+              "retry": 2
+            },
+            "typeProperties": {
+              "storedProcedureName": "[audit].[usp_LogGoldModelEnd]",
+              "storedProcedureParameters": {
+                "GoldRunId": {
+                  "value": "@guid()",
+                  "type": "String"
+                },
+                "Status": {
+                  "value": "@if(equals(activity('Gold Model Curation').status, 'Succeeded'), 'SUCCEEDED', 'FAILED')",
+                  "type": "String"
+                },
+                "ErrorMessage": {
+                  "value": "@if(equals(activity('Gold Model Curation').status, 'Succeeded'), null, activity('Gold Model Curation').error.message)",
+                  "type": "String"
+                }
+              }
+            },
+            "dataset": {
+              "referenceName": "ds_control_database",
+              "type": "DatasetReference"
+            }
+          }
+        ]
+      }
+    ],
+    "parameters": {
+      "control_jdbc_url": {
+        "type": "String",
+        "defaultValue": "jdbc:sqlserver://placeholder;database=fabric_control;"
+      }
+    },
+    "variables": {},
+    "annotations": [],
+    "lastPublishTime": "2026-06-21T00:00:00Z"
+  }
+}

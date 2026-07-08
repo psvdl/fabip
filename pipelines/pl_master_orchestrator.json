@@ -1,0 +1,443 @@
+{
+  "name": "pl_master_orchestrator",
+  "properties": {
+    "description": "Master orchestrator for Bronze -> Silver -> Gold ELT pipeline",
+    "activities": [
+      {
+        "name": "Lookup Control Entities",
+        "type": "Lookup",
+        "dependsOn": [],
+        "policy": {
+          "timeout": "0.10:00:00",
+          "retry": 2,
+          "retryIntervalInSeconds": 30,
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "typeProperties": {
+          "source": {
+            "type": "AzureSqlSource",
+            "sqlReaderStoredProcedureName": "[cfg].[usp_GetEntitiesToProcess]",
+            "storedProcedureParameters": {
+              "PipelineName": {
+                "type": "String",
+                "value": "pl_master_orchestrator"
+              },
+              "MaxParallelism": {
+                "type": "Int32",
+                "value": "10"
+              }
+            }
+          },
+          "dataset": {
+            "referenceName": "ds_control_database",
+            "type": "DatasetReference"
+          },
+          "firstRowOnly": false
+        }
+      },
+      {
+        "name": "Log Pipeline Start",
+        "type": "SqlServerStoredProcedure",
+        "dependsOn": [
+          {
+            "activity": "Lookup Control Entities",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          }
+        ],
+        "policy": {
+          "timeout": "0.00:05:00",
+          "retry": 2,
+          "retryIntervalInSeconds": 30
+        },
+        "typeProperties": {
+          "storedProcedureName": "[audit].[usp_LogPipelineStart]",
+          "storedProcedureParameters": {
+            "RunId": {
+              "value": "@variables('RunId')",
+              "type": "String"
+            },
+            "PipelineName": {
+              "value": "pl_master_orchestrator",
+              "type": "String"
+            },
+            "TriggerType": {
+              "value": "@pipeline().TriggerType",
+              "type": "String"
+            },
+            "TriggerId": {
+              "value": "@pipeline().TriggerId",
+              "type": "String"
+            },
+            "WorkspaceId": {
+              "value": "@pipeline().GroupId",
+              "type": "String"
+            },
+            "ParametersJson": {
+              "value": "@string(pipeline().parameters)",
+              "type": "String"
+            }
+          }
+        },
+        "dataset": {
+          "referenceName": "ds_control_database",
+          "type": "DatasetReference"
+        }
+      },
+      {
+        "name": "ForEach Entity",
+        "type": "ForEach",
+        "dependsOn": [
+          {
+            "activity": "Log Pipeline Start",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          }
+        ],
+        "typeProperties": {
+          "items": {
+            "value": "@activity('Lookup Control Entities').output.value",
+            "type": "Expression"
+          },
+          "isSequential": false,
+          "batchCount": 5
+        },
+        "activities": [
+          {
+            "name": "Bronze Ingestion",
+            "type": "Notebook",
+            "dependsOn": [],
+            "policy": {
+              "timeout": "0.02:00:00",
+              "retry": 3,
+              "retryIntervalInSeconds": 60
+            },
+            "typeProperties": {
+              "notebook": {
+                "referenceName": "nb_bronze_ingestion",
+                "type": "NotebookReference"
+              },
+              "parameters": {
+                "entity_id": {
+                  "value": "@item().EntityId",
+                  "type": "Expression"
+                },
+                "run_id": {
+                  "value": "@variables('RunId')",
+                  "type": "Expression"
+                },
+                "source_name": {
+                  "value": "@item().SourceName",
+                  "type": "Expression"
+                },
+                "entity_name": {
+                  "value": "@item().EntityName",
+                  "type": "Expression"
+                },
+                "load_type": {
+                  "value": "@item().LoadType",
+                  "type": "Expression"
+                },
+                "watermark_before": {
+                  "value": "@item().LastWatermark",
+                  "type": "Expression"
+                },
+                "connection_string_ref": {
+                  "value": "@item().ConnectionStringRef",
+                  "type": "Expression"
+                },
+                "source_schema": {
+                  "value": "@item().SourceSchema",
+                  "type": "Expression"
+                },
+                "target_lakehouse": {
+                  "value": "@item().TargetLakehouse",
+                  "type": "Expression"
+                },
+                "target_schema": {
+                  "value": "@item().TargetSchema",
+                  "type": "Expression"
+                },
+                "target_table_name": {
+                  "value": "@item().TargetTableName",
+                  "type": "Expression"
+                },
+                "watermark_column": {
+                  "value": "@item().WatermarkColumn",
+                  "type": "Expression"
+                },
+                "watermark_datatype": {
+                  "value": "@item().WatermarkDataType",
+                  "type": "Expression"
+                },
+                "source_filter_clause": {
+                  "value": "@item().SourceFilterClause",
+                  "type": "Expression"
+                },
+                "auth_type": {
+                  "value": "@item().AuthenticationType",
+                  "type": "Expression"
+                },
+                "drift_strategy": {
+                  "value": "merge",
+                  "type": "String"
+                },
+                "control_jdbc_url": {
+                  "value": "@pipeline().parameters.control_jdbc_url",
+                  "type": "Expression"
+                },
+                "key_vault_name": {
+                  "value": "@pipeline().parameters.key_vault_name",
+                  "type": "Expression"
+                }
+              }
+            }
+          },
+          {
+            "name": "Data Quality Check",
+            "type": "Notebook",
+            "dependsOn": [
+              {
+                "activity": "Bronze Ingestion",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.01:00:00",
+              "retry": 1,
+              "retryIntervalInSeconds": 30
+            },
+            "typeProperties": {
+              "notebook": {
+                "referenceName": "nb_data_quality",
+                "type": "NotebookReference"
+              },
+              "parameters": {
+                "entity_id": {
+                  "value": "@item().EntityId",
+                  "type": "Expression"
+                },
+                "entity_run_id": {
+                  "value": "@activity('Bronze Ingestion').output.runOutput",
+                  "type": "Expression"
+                },
+                "source_lakehouse": {
+                  "value": "@item().TargetLakehouse",
+                  "type": "Expression"
+                },
+                "source_schema": {
+                  "value": "@item().TargetSchema",
+                  "type": "Expression"
+                },
+                "source_table": {
+                  "value": "@item().TargetTableName",
+                  "type": "Expression"
+                },
+                "control_jdbc_url": {
+                  "value": "@pipeline().parameters.control_jdbc_url",
+                  "type": "Expression"
+                }
+              }
+            }
+          },
+          {
+            "name": "Silver Transformation",
+            "type": "Notebook",
+            "dependsOn": [
+              {
+                "activity": "Data Quality Check",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.02:00:00",
+              "retry": 2,
+              "retryIntervalInSeconds": 60
+            },
+            "typeProperties": {
+              "notebook": {
+                "referenceName": "nb_silver_transform",
+                "type": "NotebookReference"
+              },
+              "parameters": {
+                "transformation_id": {
+                  "value": "@item().EntityId",
+                  "type": "Expression"
+                },
+                "entity_id": {
+                  "value": "@item().EntityId",
+                  "type": "Expression"
+                },
+                "run_id": {
+                  "value": "@variables('RunId')",
+                  "type": "Expression"
+                },
+                "entity_run_id": {
+                  "value": "@activity('Bronze Ingestion').output.runOutput",
+                  "type": "Expression"
+                },
+                "source_lakehouse": {
+                  "value": "@item().TargetLakehouse",
+                  "type": "Expression"
+                },
+                "source_schema": {
+                  "value": "@item().TargetSchema",
+                  "type": "Expression"
+                },
+                "source_table": {
+                  "value": "@item().TargetTableName",
+                  "type": "Expression"
+                },
+                "target_lakehouse": {
+                  "value": "@item().TargetLakehouse",
+                  "type": "Expression"
+                },
+                "target_schema": {
+                  "value": "cleaned",
+                  "type": "String"
+                },
+                "target_table": {
+                  "value": "@item().TargetTableName",
+                  "type": "Expression"
+                },
+                "transformation_type": {
+                  "value": "STANDARDIZATION",
+                  "type": "String"
+                },
+                "transformation_logic": {
+                  "value": "{}",
+                  "type": "String"
+                },
+                "business_key_columns": {
+                  "value": "@item().WatermarkColumn",
+                  "type": "Expression"
+                },
+                "control_jdbc_url": {
+                  "value": "@pipeline().parameters.control_jdbc_url",
+                  "type": "Expression"
+                }
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "Gold Layer Curation",
+        "type": "Notebook",
+        "dependsOn": [
+          {
+            "activity": "ForEach Entity",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          }
+        ],
+        "policy": {
+          "timeout": "0.02:00:00",
+          "retry": 2,
+          "retryIntervalInSeconds": 60
+        },
+        "typeProperties": {
+          "notebook": {
+            "referenceName": "nb_gold_curate",
+            "type": "NotebookReference"
+          },
+          "parameters": {
+            "model_name": {
+              "value": "all",
+              "type": "String"
+            },
+            "target_warehouse": {
+              "value": "wh_gold",
+              "type": "String"
+            },
+            "target_schema": {
+              "value": "curated",
+              "type": "String"
+            },
+            "run_id": {
+              "value": "@variables('RunId')",
+              "type": "Expression"
+            },
+            "control_jdbc_url": {
+              "value": "@pipeline().parameters.control_jdbc_url",
+              "type": "Expression"
+            }
+          }
+        }
+      },
+      {
+        "name": "Log Pipeline End",
+        "type": "SqlServerStoredProcedure",
+        "dependsOn": [
+          {
+            "activity": "Gold Layer Curation",
+            "dependencyConditions": [
+              "Completed"
+            ]
+          }
+        ],
+        "policy": {
+          "timeout": "0.00:05:00",
+          "retry": 2,
+          "retryIntervalInSeconds": 30
+        },
+        "typeProperties": {
+          "storedProcedureName": "[audit].[usp_LogPipelineEnd]",
+          "storedProcedureParameters": {
+            "RunId": {
+              "value": "@variables('RunId')",
+              "type": "String"
+            },
+            "Status": {
+              "value": "@if(equals(activity('Gold Layer Curation').status, 'Succeeded'), 'SUCCEEDED', 'FAILED')",
+              "type": "String"
+            },
+            "ErrorMessage": {
+              "value": "@if(equals(activity('Gold Layer Curation').status, 'Succeeded'), null, activity('Gold Layer Curation').error.message)",
+              "type": "String"
+            },
+            "RowsRead": {
+              "value": "@activity('Gold Layer Curation').output.runOutput",
+              "type": "Int64"
+            },
+            "RowsWritten": {
+              "value": "@activity('Gold Layer Curation').output.runOutput",
+              "type": "Int64"
+            }
+          }
+        },
+        "dataset": {
+          "referenceName": "ds_control_database",
+          "type": "DatasetReference"
+        }
+      }
+    ],
+    "parameters": {
+      "control_jdbc_url": {
+        "type": "String",
+        "defaultValue": "jdbc:sqlserver://placeholder;database=fabric_control;"
+      },
+      "key_vault_name": {
+        "type": "String",
+        "defaultValue": "kv-placeholder"
+      }
+    },
+    "variables": {
+      "RunId": {
+        "type": "String",
+        "defaultValue": "@guid()"
+      }
+    },
+    "concurrency": 10,
+    "annotations": [],
+    "lastPublishTime": "2026-06-21T00:00:00Z"
+  }
+}

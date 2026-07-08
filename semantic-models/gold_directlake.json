@@ -1,0 +1,267 @@
+{
+  "name": "GoldDirectLake",
+  "compatibilityLevel": 1601,
+  "model": {
+    "tables": [
+      {
+        "name": "dim_customers",
+        "columns": [
+          {
+            "name": "CustomerID",
+            "dataType": "int64",
+            "sourceColumn": "CustomerID"
+          },
+          {
+            "name": "CustomerName",
+            "dataType": "string",
+            "sourceColumn": "CustomerName"
+          },
+          {
+            "name": "Email",
+            "dataType": "string",
+            "sourceColumn": "Email",
+            "annotations": [
+              {
+                "name": "PBI_DataCategory",
+                "value": "Email"
+              }
+            ]
+          },
+          {
+            "name": "Phone",
+            "dataType": "string",
+            "sourceColumn": "Phone",
+            "annotations": [
+              {
+                "name": "PBI_DataCategory",
+                "value": "Phone"
+              }
+            ]
+          },
+          {
+            "name": "Segment",
+            "dataType": "string",
+            "sourceColumn": "Segment"
+          },
+          {
+            "name": "Region",
+            "dataType": "string",
+            "sourceColumn": "Region"
+          },
+          {
+            "name": "ValidFrom",
+            "dataType": "dateTime",
+            "sourceColumn": "ValidFrom"
+          },
+          {
+            "name": "IsCurrent",
+            "dataType": "boolean",
+            "sourceColumn": "IsCurrent"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "dim_customers",
+            "mode": "directLake",
+            "source": {
+              "type": "entity",
+              "entityName": "dim_customers",
+              "schemaName": "curated",
+              "expression": "wh_gold"
+            }
+          }
+        ]
+      },
+      {
+        "name": "fact_orders",
+        "columns": [
+          {
+            "name": "OrderID",
+            "dataType": "int64",
+            "sourceColumn": "OrderID"
+          },
+          {
+            "name": "CustomerID",
+            "dataType": "int64",
+            "sourceColumn": "CustomerID"
+          },
+          {
+            "name": "OrderDate",
+            "dataType": "dateTime",
+            "sourceColumn": "OrderDate"
+          },
+          {
+            "name": "OrderTotal",
+            "dataType": "decimal",
+            "sourceColumn": "OrderTotal"
+          },
+          {
+            "name": "Quantity",
+            "dataType": "int64",
+            "sourceColumn": "Quantity"
+          },
+          {
+            "name": "Discount",
+            "dataType": "decimal",
+            "sourceColumn": "Discount"
+          },
+          {
+            "name": "Status",
+            "dataType": "string",
+            "sourceColumn": "Status"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "fact_orders",
+            "mode": "directLake",
+            "source": {
+              "type": "entity",
+              "entityName": "fact_orders",
+              "schemaName": "curated",
+              "expression": "wh_gold"
+            }
+          }
+        ]
+      },
+      {
+        "name": "Date",
+        "columns": [
+          {
+            "name": "Date",
+            "dataType": "dateTime",
+            "sourceColumn": "Date"
+          },
+          {
+            "name": "Year",
+            "dataType": "int64",
+            "sourceColumn": "Year"
+          },
+          {
+            "name": "Month",
+            "dataType": "int64",
+            "sourceColumn": "Month"
+          },
+          {
+            "name": "Day",
+            "dataType": "int64",
+            "sourceColumn": "Day"
+          },
+          {
+            "name": "Quarter",
+            "dataType": "string",
+            "sourceColumn": "Quarter"
+          },
+          {
+            "name": "MonthName",
+            "dataType": "string",
+            "sourceColumn": "MonthName"
+          },
+          {
+            "name": "DayOfWeek",
+            "dataType": "string",
+            "sourceColumn": "DayOfWeek"
+          },
+          {
+            "name": "IsWeekend",
+            "dataType": "boolean",
+            "sourceColumn": "IsWeekend"
+          },
+          {
+            "name": "FiscalYear",
+            "dataType": "int64",
+            "sourceColumn": "FiscalYear"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "Date",
+            "mode": "directLake",
+            "source": {
+              "type": "entity",
+              "entityName": "Date",
+              "schemaName": "curated",
+              "expression": "wh_gold"
+            }
+          }
+        ]
+      }
+    ],
+    "relationships": [
+      {
+        "name": "fact_orders_to_dim_customers",
+        "fromTable": "fact_orders",
+        "fromColumn": "CustomerID",
+        "toTable": "dim_customers",
+        "toColumn": "CustomerID",
+        "crossFilteringBehavior": "bothDirections"
+      },
+      {
+        "name": "fact_orders_to_Date",
+        "fromTable": "fact_orders",
+        "fromColumn": "OrderDate",
+        "toTable": "Date",
+        "toColumn": "Date",
+        "crossFilteringBehavior": "singleDirection"
+      }
+    ],
+    "measures": [
+      {
+        "name": "Total Revenue",
+        "expression": "SUM(fact_orders[OrderTotal])",
+        "formatString": "$#,##0.00"
+      },
+      {
+        "name": "Total Orders",
+        "expression": "COUNTROWS(fact_orders)",
+        "formatString": "#,##0"
+      },
+      {
+        "name": "Average Order Value",
+        "expression": "DIVIDE([Total Revenue], [Total Orders], 0)",
+        "formatString": "$#,##0.00"
+      },
+      {
+        "name": "YTD Revenue",
+        "expression": "TOTALYTD([Total Revenue], Date[Date])",
+        "formatString": "$#,##0.00"
+      },
+      {
+        "name": "YoY Growth",
+        "expression": "VAR CurrentYear = [Total Revenue] VAR PreviousYear = CALCULATE([Total Revenue], SAMEPERIODLASTYEAR(Date[Date])) RETURN DIVIDE(CurrentYear - PreviousYear, PreviousYear, 0)",
+        "formatString": "0.00%"
+      }
+    ],
+    "roles": [
+      {
+        "name": "Sales Analyst",
+        "modelPermission": "read",
+        "tablePermissions": [
+          {
+            "name": "dim_customers",
+            "columnPermissions": [
+              {
+                "name": "Email",
+                "metadataRight": "none"
+              },
+              {
+                "name": "Phone",
+                "metadataRight": "none"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Finance Manager",
+        "modelPermission": "read",
+        "tablePermissions": [
+          {
+            "name": "fact_orders",
+            "filterExpression": "fact_orders[Status] = \"Completed\""
+          }
+        ]
+      }
+    ]
+  }
+}

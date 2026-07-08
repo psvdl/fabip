@@ -1,0 +1,58 @@
+// ============================================================================
+// MONITORING KQL QUERIES
+// Run these in Fabric Real-Time Dashboard or Azure Monitor
+// ============================================================================
+
+// Pipeline runs summary last 24h
+PipelineRuns
+| where StartTime > ago(24h)
+| summarize 
+    TotalRuns = count(),
+    Successful = countif(Status == "SUCCEEDED"),
+    Failed = countif(Status == "FAILED"),
+    SuccessRate = countif(Status == "SUCCEEDED") * 100.0 / count(),
+    AvgDuration = avg(DurationSeconds)
+    by PipelineName
+
+// Entity-level throughput
+EntityRuns
+| where StartTime > ago(24h)
+| summarize 
+    TotalRows = sum(RowsRead),
+    TotalWritten = sum(RowsWritten),
+    AvgDuration = avg(DurationSeconds)
+    by EntityName
+| order by TotalRows desc
+
+// Gold model build times
+GoldModelRuns
+| where StartTime > ago(7d)
+| summarize 
+    AvgBuildTime = avg(DurationSeconds),
+    MaxBuildTime = max(DurationSeconds),
+    SuccessRate = countif(Status == "SUCCEEDED") * 100.0 / count()
+    by ModelName
+
+// Data quality trends
+dq.Results
+| where EvaluatedTime > ago(7d)
+| summarize 
+    AvgFailureRate = avg(FailureRate),
+    CriticalFailures = countif(Severity == "CRITICAL" and Passed == false)
+    by EntityId, bin(EvaluatedTime, 1d)
+
+// Capacity throttling events
+AzureMetrics
+| where MetricName == "FabricCapacityThrottling"
+| where Maximum > 0
+| summarize ThrottleEvents = count() by bin(TimeGenerated, 1h)
+
+// Schema drift alerts
+SchemaDriftLog
+| where DetectedTime > ago(24h)
+| project EntityId, DriftType, AddedColumns, RemovedColumns, DetectedTime
+
+// Quarantine summary
+QuarantineRows
+| where QuarantineTime > ago(24h)
+| summarize QuarantinedCount = count() by SourceTable, bin(QuarantineTime, 1h)

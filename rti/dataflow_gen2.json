@@ -1,0 +1,52 @@
+{
+  "name": "df_lowcode_transforms",
+  "description": "Dataflow Gen2 for low-code transformations (non-Spark workloads)",
+  "queries": [
+    {
+      "name": "CleanCustomerNames",
+      "source": {
+        "type": "Lakehouse",
+        "lakehouse": "lh_bronze",
+        "schema": "raw",
+        "table": "customers"
+      },
+      "transformations": [
+        {
+          "type": "ReplaceValues",
+          "column": "CustomerName",
+          "valuesToReplace": [
+            {"oldValue": "NULL", "newValue": "Unknown"},
+            {"oldValue": "", "newValue": "Unknown"}
+          ]
+        },
+        {
+          "type": "Trim",
+          "column": "CustomerName"
+        },
+        {
+          "type": "ChangeType",
+          "column": "Email",
+          "newType": "Text"
+        },
+        {
+          "type": "AddColumn",
+          "column": "EmailDomain",
+          "formula": "Text.AfterDelimiter([Email], \"@\")"
+        }
+      ],
+      "destination": {
+        "type": "Lakehouse",
+        "lakehouse": "lh_silver",
+        "schema": "cleaned",
+        "table": "customers_dataflow",
+        "mode": "Replace"
+      }
+    }
+  ],
+  "refresh": {
+    "enabled": true,
+    "frequency": "Daily",
+    "time": "03:00",
+    "timezone": "UTC"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "type": "Microsoft.Insights/metricAlerts",
+  "apiVersion": "2018-03-01",
+  "name": "FabricPipelineFailureAlert",
+  "location": "global",
+  "properties": {
+    "description": "Alert when Fabric ELT pipeline fails",
+    "severity": 0,
+    "enabled": true,
+    "scopes": [
+      "/subscriptions/__SUBSCRIPTION_ID__/resourceGroups/__RESOURCE_GROUP__/providers/Microsoft.OperationalInsights/workspaces/__LOG_ANALYTICS_NAME__"
+    ],
+    "evaluationFrequency": "PT5M",
+    "windowSize": "PT15M",
+    "criteria": {
+      "odata.type": "Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria",
+      "allOf": [
+        {
+          "name": "PipelineFailure",
+          "metricName": "CustomLogPipelineFailure",
+          "dimensions": [],
+          "operator": "GreaterThan",
+          "threshold": 0,
+          "timeAggregation": "Count"
+        }
+      ]
+    },
+    "actions": [
+      {
+        "actionGroupId": "/subscriptions/__SUBSCRIPTION_ID__/resourceGroups/__RESOURCE_GROUP__/providers/Microsoft.Insights/actionGroups/__ACTION_GROUP_NAME__"
+      }
+    ]
+  }
+}

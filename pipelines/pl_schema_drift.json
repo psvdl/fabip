@@ -1,0 +1,77 @@
+{
+  "name": "pl_schema_drift_detection",
+  "properties": {
+    "description": "Pre-ingestion schema drift detection for all entities",
+    "activities": [
+      {
+        "name": "Lookup Entities",
+        "type": "Lookup",
+        "dependsOn": [],
+        "typeProperties": {
+          "source": {
+            "type": "AzureSqlSource",
+            "sqlReaderQuery": "SELECT EntityId, EntityName, TargetLakehouse, TargetSchema, TargetTableName FROM cfg.Entities WHERE IsActive = 1"
+          },
+          "dataset": {
+            "referenceName": "ds_control_database",
+            "type": "DatasetReference"
+          },
+          "firstRowOnly": false
+        }
+      },
+      {
+        "name": "ForEach Entity Drift Check",
+        "type": "ForEach",
+        "dependsOn": [
+          {
+            "activity": "Lookup Entities",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          }
+        ],
+        "typeProperties": {
+          "items": {
+            "value": "@activity('Lookup Entities').output.value",
+            "type": "Expression"
+          },
+          "isSequential": true,
+          "activities": [
+            {
+              "name": "Detect Schema Drift",
+              "type": "Notebook",
+              "typeProperties": {
+                "notebook": {
+                  "referenceName": "nb_schema_drift_detection",
+                  "type": "NotebookReference"
+                },
+                "parameters": {
+                  "entity_id": {
+                    "value": "@item().EntityId",
+                    "type": "Expression"
+                  },
+                  "source_lakehouse": {
+                    "value": "@item().TargetLakehouse",
+                    "type": "Expression"
+                  },
+                  "source_schema": {
+                    "value": "@item().TargetSchema",
+                    "type": "Expression"
+                  },
+                  "source_table": {
+                    "value": "@item().TargetTableName",
+                    "type": "Expression"
+                  },
+                  "drift_strategy": {
+                    "value": "alert",
+                    "type": "String"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

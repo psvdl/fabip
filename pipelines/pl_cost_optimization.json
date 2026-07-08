@@ -1,0 +1,45 @@
+{
+  "name": "pl_cost_optimization",
+  "properties": {
+    "description": "Automated cost optimization: capacity scheduling, storage cleanup",
+    "activities": [
+      {
+        "name": "Run Cost Optimization Script",
+        "type": "AzureMLExecutePipeline",
+        "dependsOn": [],
+        "typeProperties": {
+          "mlPipelineId": "cost-optimization-pipeline"
+        }
+      },
+      {
+        "name": "Log Cost Optimization",
+        "type": "SqlServerStoredProcedure",
+        "dependsOn": [
+          {
+            "activity": "Run Cost Optimization Script",
+            "dependencyConditions": [
+              "Completed"
+            ]
+          }
+        ],
+        "typeProperties": {
+          "storedProcedureName": "[audit].[usp_LogPipelineEnd]",
+          "storedProcedureParameters": {
+            "RunId": {
+              "value": "@guid()",
+              "type": "String"
+            },
+            "Status": {
+              "value": "SUCCEEDED",
+              "type": "String"
+            }
+          }
+        },
+        "dataset": {
+          "referenceName": "ds_control_database",
+          "type": "DatasetReference"
+        }
+      }
+    ]
+  }
+}

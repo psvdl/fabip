@@ -1,0 +1,64 @@
+// ============================================================================
+// SILVER EVENTHOUSE TABLES
+// Real-time transformation with Update Policies
+// ============================================================================
+
+.create table IoTDevicesCleaned (
+    DeviceId: string,
+    Timestamp: datetime,
+    Temperature: double,
+    Humidity: double,
+    Location: string,
+    Status: string,
+    TemperatureCelsius: double,
+    IsAnomaly: bool
+) with (docstring = "Cleaned IoT telemetry with derived columns")
+
+.create table WebEventsCleaned (
+    EventId: string,
+    Timestamp: datetime,
+    UserId: string,
+    PageUrl: string,
+    SessionId: string,
+    EventType: string,
+    DurationMs: int,
+    HourOfDay: int,
+    IsBounce: bool
+) with (docstring = "Cleaned web events with time dimensions")
+
+.create table TransactionsCleaned (
+    TransactionId: string,
+    Timestamp: datetime,
+    UserId: string,
+    Amount: decimal,
+    Currency: string,
+    MerchantId: string,
+    Status: string,
+    AmountUSD: decimal,
+    IsHighValue: bool
+) with (docstring = "Cleaned transactions with currency normalization")
+
+// Update Policies (auto-transform on ingestion)
+.alter table IoTDevicesCleaned policy update
+@'[{"Source": "database("BronzeEventhouse").IoTDevices", "Query": "IoTDevices | extend TemperatureCelsius = (Temperature - 32) * 5.0 / 9.0, IsAnomaly = Temperature > 100 or Temperature < 0"}]'
+
+.alter table WebEventsCleaned policy update
+@'[{"Source": "database("BronzeEventhouse").WebEvents", "Query": "WebEvents | extend HourOfDay = datetime_part("hour", Timestamp), IsBounce = DurationMs < 5000"}]'
+
+.alter table TransactionsCleaned policy update
+@'[{"Source": "database("BronzeEventhouse").Transactions", "Query": "Transactions | extend AmountUSD = iif(Currency == "USD", Amount, Amount * 1.1), IsHighValue = AmountUSD > 1000"}]'
+
+// Materialized Views for instant dashboards
+.create materialized-view TransactionsSummary on table TransactionsCleaned
+{
+    TransactionsCleaned
+    | summarize TransactionCount = count(), TotalAmount = sum(AmountUSD), AvgAmount = avg(AmountUSD), MaxAmount = max(AmountUSD) by MerchantId, bin(Timestamp, 1h)
+}
+
+.create materialized-view IoTDeviceSummary on table IoTDevicesCleaned
+{
+    IoTDevicesCleaned
+    | summarize AvgTemperature = avg(TemperatureCelsius), MaxHumidity = max(Humidity), AnomalyCount = countif(IsAnomaly) by DeviceId, bin(Timestamp, 5m)
+}
+
+print "Silver Eventhouse update policies and materialized views created"

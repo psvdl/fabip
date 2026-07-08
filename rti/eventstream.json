@@ -1,0 +1,83 @@
+{
+  "name": "es_main_ingestion",
+  "description": "Main Eventstream for real-time data ingestion from multiple sources",
+  "sources": [
+    {
+      "name": "kafka-orders",
+      "type": "Kafka",
+      "connection": {
+        "bootstrapServers": "kafka.yourcompany.com:9093",
+        "topic": "orders",
+        "consumerGroup": "fabric-elt-consumer",
+        "authentication": {
+          "type": "SASL_SSL",
+          "usernameRef": "kv-kafka-username",
+          "passwordRef": "kv-kafka-password"
+        }
+      },
+      "serialization": {
+        "type": "Json",
+        "encoding": "UTF8"
+      }
+    },
+    {
+      "name": "eventhub-iot",
+      "type": "EventHub",
+      "connection": {
+        "eventHubNamespace": "eh-fabric-iot.servicebus.windows.net",
+        "eventHubName": "iot-devices",
+        "consumerGroup": "fabric",
+        "authentication": "ManagedIdentity"
+      },
+      "serialization": {
+        "type": "Json",
+        "encoding": "UTF8"
+      }
+    },
+    {
+      "name": "sql-cdc-customers",
+      "type": "SQLChangeEventStreaming",
+      "connection": {
+        "server": "your-server.database.windows.net",
+        "database": "customers",
+        "table": "dbo.Customers",
+        "authentication": "ManagedIdentity"
+      }
+    }
+  ],
+  "destinations": [
+    {
+      "name": "bronze-eventhouse",
+      "type": "Eventhouse",
+      "eventhouse": "BronzeEventhouse",
+      "table": "IoTDevices",
+      "source": "eventhub-iot"
+    },
+    {
+      "name": "bronze-orders",
+      "type": "Eventhouse",
+      "eventhouse": "BronzeEventhouse",
+      "table": "Transactions",
+      "source": "kafka-orders"
+    }
+  ],
+  "transformations": [
+    {
+      "name": "filter-valid-orders",
+      "type": "Filter",
+      "input": "kafka-orders",
+      "condition": "Quantity > 0 AND UnitPrice > 0"
+    },
+    {
+      "name": "enrich-iot",
+      "type": "Map",
+      "input": "eventhub-iot",
+      "mappings": [
+        {"source": "deviceId", "target": "DeviceId"},
+        {"source": "temperature", "target": "Temperature"},
+        {"source": "humidity", "target": "Humidity"},
+        {"source": "timestamp", "target": "Timestamp"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "name": "pl_profiling",
+  "properties": {
+    "description": "Weekly data profiling for all tables",
+    "activities": [
+      {
+        "name": "Profile Bronze Tables",
+        "type": "ForEach",
+        "dependsOn": [],
+        "typeProperties": {
+          "items": {
+            "value": "[\"raw\"]",
+            "type": "Expression"
+          },
+          "isSequential": true,
+          "activities": [
+            {
+              "name": "Profile Table",
+              "type": "Notebook",
+              "typeProperties": {
+                "notebook": {
+                  "referenceName": "nb_data_profiling",
+                  "type": "NotebookReference"
+                },
+                "parameters": {
+                  "lakehouse": {
+                    "value": "lh_bronze",
+                    "type": "String"
+                  },
+                  "schema": {
+                    "value": "@item()",
+                    "type": "Expression"
+                  },
+                  "table": {
+                    "value": "customers",
+                    "type": "String"
+                  },
+                  "sample_size": {
+                    "value": "100000",
+                    "type": "String"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

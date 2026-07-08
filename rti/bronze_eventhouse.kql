@@ -1,0 +1,42 @@
+// ============================================================================
+// BRONZE EVENTHOUSE TABLES
+// Real-time raw streaming data landing
+// ============================================================================
+
+.create table IoTDevices (
+    DeviceId: string,
+    Timestamp: datetime,
+    Temperature: double,
+    Humidity: double,
+    Location: string,
+    Status: string
+) with (docstring = "Raw IoT device telemetry")
+
+.create table WebEvents (
+    EventId: string,
+    Timestamp: datetime,
+    UserId: string,
+    PageUrl: string,
+    SessionId: string,
+    EventType: string,
+    DurationMs: int
+) with (docstring = "Raw web analytics events")
+
+.create table Transactions (
+    TransactionId: string,
+    Timestamp: datetime,
+    UserId: string,
+    Amount: decimal,
+    Currency: string,
+    MerchantId: string,
+    Status: string
+) with (docstring = "Raw transaction stream")
+
+// Ingestion mappings for Eventstream
+.create table IoTDevices ingestion json mapping 'IoTDevicesMapping' '[{"column":"DeviceId","path":"$.deviceId"},{"column":"Timestamp","path":"$.timestamp"},{"column":"Temperature","path":"$.temperature"},{"column":"Humidity","path":"$.humidity"},{"column":"Location","path":"$.location"},{"column":"Status","path":"$.status"}]'
+
+.create table WebEvents ingestion json mapping 'WebEventsMapping' '[{"column":"EventId","path":"$.eventId"},{"column":"Timestamp","path":"$.timestamp"},{"column":"UserId","path":"$.userId"},{"column":"PageUrl","path":"$.pageUrl"},{"column":"SessionId","path":"$.sessionId"},{"column":"EventType","path":"$.eventType"},{"column":"DurationMs","path":"$.durationMs"}]'
+
+.create table Transactions ingestion json mapping 'TransactionsMapping' '[{"column":"TransactionId","path":"$.transactionId"},{"column":"Timestamp","path":"$.timestamp"},{"column":"UserId","path":"$.userId"},{"column":"Amount","path":"$.amount"},{"column":"Currency","path":"$.currency"},{"column":"MerchantId","path":"$.merchantId"},{"column":"Status","path":"$.status"}]'
+
+print "Bronze Eventhouse tables and mappings created"

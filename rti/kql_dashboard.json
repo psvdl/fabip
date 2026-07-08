@@ -1,0 +1,44 @@
+{
+  "name": "ELT Real-Time Dashboard",
+  "description": "Real-time monitoring of ELT pipeline health, data quality, and capacity",
+  "tiles": [
+    {
+      "title": "Pipeline Success Rate (Last 24h)",
+      "query": "FabricPipelineRuns\n| where TimeGenerated > ago(24h)\n| summarize SuccessRate = round(countif(Status == 'Succeeded') * 100.0 / count(), 2)",
+      "visualization": "Stat",
+      "position": {"x": 0, "y": 0, "width": 3, "height": 2}
+    },
+    {
+      "title": "Rows Processed (Last Hour)",
+      "query": "FabricPipelineRuns\n| where TimeGenerated > ago(1h)\n| summarize TotalRows = sum(RowsRead)",
+      "visualization": "Stat",
+      "position": {"x": 3, "y": 0, "width": 3, "height": 2}
+    },
+    {
+      "title": "CU Consumption (Last 24h)",
+      "query": "FabricCapacityMetrics\n| where TimeGenerated > ago(24h)\n| summarize AvgCU = avg(CUConsumption), MaxCU = max(CUConsumption) by bin(TimeGenerated, 1h)",
+      "visualization": "TimeChart",
+      "position": {"x": 6, "y": 0, "width": 6, "height": 4}
+    },
+    {
+      "title": "Data Quality Score by Entity",
+      "query": "dq.Results\n| where CreatedDate > ago(24h)\n| summarize AvgFailureRate = avg(FailureRate) by RuleName\n| extend QualityScore = round(100 - AvgFailureRate, 2)",
+      "visualization": "BarChart",
+      "position": {"x": 0, "y": 2, "width": 6, "height": 4}
+    },
+    {
+      "title": "Active Alerts",
+      "query": "DataActivatorAlerts\n| where Status == 'Active'\n| summarize Count = count() by Severity",
+      "visualization": "PieChart",
+      "position": {"x": 0, "y": 6, "width": 4, "height": 3}
+    },
+    {
+      "title": "Real-Time Sales (5-min)",
+      "query": "GoldEventhouse.RealTimeSalesKPI\n| where Timestamp > ago(1h)\n| summarize Revenue = sum(TotalRevenue) by bin(Timestamp, 5m)",
+      "visualization": "LineChart",
+      "position": {"x": 4, "y": 6, "width": 8, "height": 3}
+    }
+  ],
+  "refreshInterval": 30,
+  "timeRange": "Last 24 hours"
+}

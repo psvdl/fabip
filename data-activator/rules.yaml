@@ -1,0 +1,59 @@
+# ============================================================================
+# DATA ACTIVATOR RULES - CONCEPTUAL REFERENCE
+# Configure these manually in Fabric Portal -> Data Activator
+# ============================================================================
+
+rules:
+  - name: High Value Transaction Alert
+    description: Alert when transaction > $10,000
+    source: GoldEventhouse.TransactionsCleaned
+    condition: AmountUSD > 10000
+    severity: High
+    action:
+      type: Teams
+      channel: "Data Engineering Alerts"
+
+  - name: Fraud Detection
+    description: Alert on fraud pattern
+    source: GoldEventhouse.TransactionsCleaned
+    condition: Status == "Fraud" and AmountUSD > 5000
+    severity: Critical
+    action:
+      type: Email
+      recipients: ["security@company.com"]
+
+  - name: IoT Device Anomaly
+    description: Alert when device temperature is anomalous
+    source: GoldEventhouse.IoTDeviceSummary
+    condition: AnomalyCount > 5
+    severity: Medium
+    action:
+      type: PowerAutomate
+      flow: "Create ServiceNow Ticket"
+
+  - name: Pipeline Failure
+    description: Alert when ELT pipeline fails
+    source: fabric_control.audit.PipelineRuns
+    condition: Status == "FAILED" and TimeGenerated > ago(15m)
+    severity: Critical
+    action:
+      type: Teams
+      channel: "Platform Ops"
+
+  - name: Data Quality Drop
+    description: Alert when DQ score drops below threshold
+    source: fabric_control.dq.Results
+    condition: FailureRate > 5
+    severity: High
+    action:
+      type: Email
+      recipients: ["data-quality@company.com"]
+
+  - name: Capacity Throttling
+    description: Alert when Fabric capacity is throttled
+    source: AzureMetrics
+    condition: FabricCapacityUtilization > 95
+    severity: Warning
+    action:
+      type: Teams
+      channel: "Platform Ops"

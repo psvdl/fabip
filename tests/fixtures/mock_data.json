@@ -1,0 +1,64 @@
+{
+  "mock_sources": [
+    {
+      "SourceId": 1,
+      "SourceName": "mock-sql",
+      "SourceType": "SQL",
+      "ConnectionStringRef": "kv-mock-conn",
+      "AuthenticationType": "ManagedIdentity",
+      "IsActive": true
+    }
+  ],
+  "mock_entities": [
+    {
+      "EntityId": 1,
+      "SourceId": 1,
+      "EntityName": "MockCustomers",
+      "EntityType": "TABLE",
+      "SourceSchema": "dbo",
+      "TargetLakehouse": "lh_bronze",
+      "TargetSchema": "raw",
+      "TargetTableName": "mock_customers",
+      "LoadType": "FULL",
+      "WatermarkColumn": null,
+      "WatermarkDataType": null,
+      "WatermarkOffset": null,
+      "ScheduleExpression": "0 2 * * *",
+      "ParallelismDegree": 1,
+      "Priority": 1,
+      "RetryCount": 3,
+      "RetryIntervalSec": 60,
+      "TimeoutMinutes": 120
+    }
+  ],
+  "mock_dq_rules": [
+    {
+      "RuleId": 1,
+      "EntityId": 1,
+      "RuleName": "Mock Not Null",
+      "RuleType": "NOT_NULL",
+      "ColumnName": "CustomerID",
+      "ExpectedValue": null,
+      "Severity": "CRITICAL",
+      "QuarantineEnabled": true
+    }
+  ],
+  "mock_gold_models": [
+    {
+      "ModelId": 1,
+      "ModelName": "mock_dim_customers",
+      "ModelType": "DIMENSION",
+      "TargetWarehouse": "wh_gold",
+      "TargetSchema": "curated",
+      "TargetTableName": "mock_dim_customers",
+      "SourceLakehouse": "lh_silver",
+      "SourceSchema": "cleaned",
+      "SourceTables": "[\"mock_customers\"]",
+      "GrainColumns": "CustomerID",
+      "CalculatedColumns": null,
+      "DependencyModels": null,
+      "IsActive": true,
+      "Priority": 1
+    }
+  ]
+}

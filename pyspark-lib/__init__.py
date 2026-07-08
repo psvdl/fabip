@@ -1,0 +1,61 @@
+# ============================================================================
+# FABRIC ELT LIBRARY - Python Package
+# Reusable PySpark library for Fabric ELT Framework
+# ============================================================================
+
+from .fabric_elt_lib import (
+    validate_not_null,
+    validate_unique,
+    validate_range,
+    validate_regex,
+    validate_foreign_key,
+    apply_all_validations,
+    standardize_case,
+    standardize_trim,
+    standardize_phone,
+    standardize_date,
+    standardize_timestamp,
+    apply_standardization,
+    apply_scd2,
+    get_watermark_from_control_table,
+    build_incremental_query,
+    get_max_watermark,
+    detect_schema_drift,
+    handle_schema_drift,
+    profile_dataframe,
+    profile_to_delta,
+    retry_with_backoff,
+    add_audit_columns,
+    get_delta_stats,
+    optimize_delta_table,
+    estimate_storage_cost,
+)
+
+__version__ = "1.0.0"
+__all__ = [
+    "validate_not_null",
+    "validate_unique",
+    "validate_range",
+    "validate_regex",
+    "validate_foreign_key",
+    "apply_all_validations",
+    "standardize_case",
+    "standardize_trim",
+    "standardize_phone",
+    "standardize_date",
+    "standardize_timestamp",
+    "apply_standardization",
+    "apply_scd2",
+    "get_watermark_from_control_table",
+    "build_incremental_query",
+    "get_max_watermark",
+    "detect_schema_drift",
+    "handle_schema_drift",
+    "profile_dataframe",
+    "profile_to_delta",
+    "retry_with_backoff",
+    "add_audit_columns",
+    "get_delta_stats",
+    "optimize_delta_table",
+    "estimate_storage_cost",
+]
